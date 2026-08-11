@@ -1,0 +1,23 @@
+name: Bug report
+description: 报告可复现的问题（请勿上传 API Key 或真实数据库）
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题描述
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 环境
+      placeholder: Windows 版本、Python 3.11.x
+

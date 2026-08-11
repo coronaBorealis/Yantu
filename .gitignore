@@ -1,0 +1,40 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Local data and runtime state
+*.db
+*.db-shm
+*.db-wal
+data/runtime.json
+*.log
+
+# Local/offline dependencies and build output
+vendor/
+build/
+dist/
+*.egg-info/
+
+# Codex and release workspace
+work/
+outputs/
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
