@@ -48,18 +48,9 @@ try {
     Write-Host "Yantu project: $projectRoot"
     Write-Host "Python: $plannerPython ($pythonVersion)"
 
-    $vendorPath = Join-Path $projectRoot "vendor"
-    if (Test-Path -LiteralPath $vendorPath) {
-        $env:PYTHONPATH = $vendorPath
-    }
-
-    & $plannerPython -c "import flask" 2>$null
+    & $plannerPython -c "import flask, dotenv" 2>$null
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "Installing missing Yantu dependencies into planner..."
-        & $plannerPython -m pip install -r (Join-Path $projectRoot "requirements.txt")
-        if ($LASTEXITCODE -ne 0) {
-            throw "Dependency installation failed. Check the network and messages above."
-        }
+        throw "Yantu dependencies are missing. Run 'conda activate planner' and then 'pip install -r requirements.txt'."
     }
 
     $runtimeFile = Join-Path $projectRoot "data\runtime.json"

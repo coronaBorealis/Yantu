@@ -6,9 +6,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-for dependency_path in (ROOT / "vendor", ROOT / "src"):
-    if dependency_path.is_dir():
-        sys.path.insert(0, str(dependency_path))
+SOURCE_ROOT = ROOT / "src"
+if SOURCE_ROOT.is_dir():
+    sys.path.insert(0, str(SOURCE_ROOT))
 
 from yantu.main import *  # noqa: F401,F403,E402
 

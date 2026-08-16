@@ -20,28 +20,15 @@ from urllib.request import urlopen
 PACKAGE_ROOT = Path(__file__).resolve().parent
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 WEB_ROOT = PACKAGE_ROOT / "web"
-VENDOR_PATH = REPOSITORY_ROOT / "vendor"
-if VENDOR_PATH.is_dir():
-    sys.path.insert(0, str(VENDOR_PATH))
 
 from flask import Flask, jsonify, request, send_from_directory
 from werkzeug.serving import BaseWSGIServer, ThreadedWSGIServer
 
+from .common import utc_now
 from .api.ai_routes import ServiceFactory, create_ai_blueprint
-from .database.repository import (
-    DEFAULT_DB_PATH,
-    DOMAINS,
-    PRIORITIES,
-    STATUSES,
-    delete_task,
-    get_task,
-    init_db,
-    insert_task,
-    list_tasks,
-    task_count,
-    update_task,
-    utc_now,
-)
+from .database.config import DEFAULT_DB_PATH
+from .database.constants import DOMAINS, PRIORITIES, STATUSES
+from .services.task_service import TaskService
 
 
 RUNTIME_FILE = REPOSITORY_ROOT / "data" / "runtime.json"
@@ -177,6 +164,7 @@ def create_app(
     llm_service_factory: ServiceFactory | None = None,
 ) -> Flask:
     app = Flask(__name__)
+    task_service = TaskService(db_path)
     app.config.update(
         DB_PATH=str(db_path),
         JSON_AS_ASCII=False,
@@ -184,7 +172,6 @@ def create_app(
         SERVER_SHUTDOWN=None,
         INSTANCE_ID=None,
     )
-    init_db(db_path)
     app.register_blueprint(create_ai_blueprint(db_path, llm_service_factory))
 
     @app.after_request
@@ -219,7 +206,7 @@ def create_app(
                 "app": "Yantu",
                 "python": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
                 "database": str(Path(app.config["DB_PATH"]).resolve()),
-                "task_count": task_count(app.config["DB_PATH"]),
+                "task_count": task_service.count(),
                 "instance_id": app.config.get("INSTANCE_ID"),
             }
         )
@@ -244,7 +231,7 @@ def create_app(
             raise ValidationError("Invalid domain filter")
         if status and status not in STATUSES:
             raise ValidationError("Invalid status filter")
-        return jsonify({"tasks": list_tasks(app.config["DB_PATH"], domain=domain, status=status)})
+        return jsonify({"tasks": task_service.list_records(domain=domain, status=status)})
 
     @app.post("/api/tasks")
     def tasks_create():
@@ -278,18 +265,18 @@ def create_app(
             "completed_at": clean.get("completed_at"),
             "sort_order": clean.get("sort_order", 0),
         }
-        return jsonify({"task": insert_task(app.config["DB_PATH"], task)}), 201
+        return jsonify({"task": task_service.create_record(task)}), 201
 
     @app.get("/api/tasks/<task_id>")
     def tasks_get(task_id: str):
-        task = get_task(app.config["DB_PATH"], task_id)
+        task = task_service.get_record(task_id)
         if not task:
             return jsonify({"error": "Task not found"}), 404
         return jsonify({"task": task})
 
     @app.patch("/api/tasks/<task_id>")
     def tasks_update(task_id: str):
-        existing = get_task(app.config["DB_PATH"], task_id)
+        existing = task_service.get_record(task_id)
         if not existing:
             return jsonify({"error": "Task not found"}), 404
         clean = normalize_task(request.get_json(silent=True) or {}, partial=True)
@@ -300,13 +287,13 @@ def create_app(
             clean["completed_at"] = existing.get("completed_at") or utc_now()
         elif "status" in clean:
             clean["completed_at"] = None
-        task = update_task(app.config["DB_PATH"], task_id, clean)
+        task = task_service.update_record(task_id, clean)
         assert task is not None
         return jsonify({"task": task})
 
     @app.delete("/api/tasks/<task_id>")
     def tasks_delete(task_id: str):
-        if not delete_task(app.config["DB_PATH"], task_id):
+        if not task_service.delete(task_id):
             return jsonify({"error": "Task not found"}), 404
         return "", 204
 
@@ -316,7 +303,7 @@ def create_app(
             {
                 "version": 2,
                 "exported_at": utc_now(),
-                "tasks": list_tasks(app.config["DB_PATH"]),
+                "tasks": task_service.list_records(),
             }
         )
 
@@ -358,12 +345,12 @@ def create_app(
                 "completed_at": clean.get("completed_at"),
                 "sort_order": clean.get("sort_order", 0),
             }
-            if get_task(app.config["DB_PATH"], task["id"]):
+            if task_service.get_record(task["id"]):
                 task.pop("id")
                 task.pop("created_at")
-                update_task(app.config["DB_PATH"], str(source["id"]), task)
+                task_service.update_record(str(source["id"]), task)
             else:
-                insert_task(app.config["DB_PATH"], task)
+                task_service.create_record(task)
             imported += 1
         return jsonify({"imported": imported})
 

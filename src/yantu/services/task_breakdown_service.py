@@ -4,15 +4,18 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..common import utc_now
 from ..ai.llm_service import LLMService
 from ..ai.schemas import TaskBreakdown
-from ..database.repository import DOMAINS, insert_tasks, utc_now
+from ..database.constants import DOMAINS
+from ..database.repositories import TaskRepository
 
 
 class TaskBreakdownService:
     def __init__(self, db_path: Path | str, llm_service: LLMService) -> None:
         self.db_path = db_path
         self.llm_service = llm_service
+        self.task_repository = TaskRepository(db_path)
 
     def preview(self, task: str) -> TaskBreakdown:
         return self.llm_service.breakdown_task(task)
@@ -34,7 +37,7 @@ class TaskBreakdownService:
             )
             for index, item in enumerate(breakdown.subtasks, start=1)
         )
-        return insert_tasks(self.db_path, records)
+        return self.task_repository.create_many(records)
 
     @staticmethod
     def _record(

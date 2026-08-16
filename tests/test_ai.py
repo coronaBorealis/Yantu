@@ -1,22 +1,17 @@
 from __future__ import annotations
 
 import json
-import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "vendor"))
-sys.path.insert(0, str(ROOT / "src"))
-
-from yantu.ai.llm_service import DeepSeekProvider, LLMResponse, LLMService  # noqa: E402
-from yantu.ai.prompt_templates import build_task_breakdown_prompt  # noqa: E402
-from yantu.ai.schemas import SchemaValidationError, TaskBreakdown  # noqa: E402
-from yantu.database.repository import task_count  # noqa: E402
-from yantu.main import create_app  # noqa: E402
+from yantu.ai.llm_service import DeepSeekProvider, LLMResponse, LLMService
+from yantu.ai.prompt_templates import build_task_breakdown_prompt
+from yantu.ai.schemas import SchemaValidationError, TaskBreakdown
+from yantu.database.repository import task_count
+from yantu.main import create_app
 
 
 SAMPLE = {

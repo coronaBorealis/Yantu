@@ -3,18 +3,13 @@ from __future__ import annotations
 import json
 import socket
 import sqlite3
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "vendor"))
-sys.path.insert(0, str(ROOT / "src"))
-
-from yantu.database.repository import init_db  # noqa: E402
-from yantu.main import bind_server, create_app  # noqa: E402
+from yantu.database.repository import init_db
+from yantu.main import bind_server, create_app
 
 
 class YantuApiTests(unittest.TestCase):
@@ -104,6 +99,16 @@ class YantuApiTests(unittest.TestCase):
             },
         )
         self.assertEqual(invalid_schedule.status_code, 400)
+
+    def test_legacy_waiting_status_remains_compatible(self):
+        created = self.client.post(
+            "/api/tasks",
+            json={"title": "等待设备", "domain": "research", "status": "waiting"},
+        )
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.get_json()["task"]["status"], "waiting")
+        listed = self.client.get("/api/tasks?status=waiting")
+        self.assertEqual([task["title"] for task in listed.get_json()["tasks"]], ["等待设备"])
 
     def test_completion_invariants_and_timestamp_are_stable(self):
         created = self.client.post(
