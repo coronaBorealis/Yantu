@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<9"]
+dev = ["pytest>=8,<9", "Pillow>=10,<12"]
 
 [project.scripts]
 yantu = "yantu.main:main"
@@ -28,7 +28,7 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-yantu = ["web/*.html", "web/*.js", "web/*.css"]
+yantu = ["web/*.html", "web/*.js", "web/*.css", "web/assets/*.png", "web/assets/*.ico"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -12,6 +12,8 @@ from ..repository import (
     insert_task,
     insert_tasks,
     list_tasks,
+    permanently_delete_task,
+    restore_task,
     task_count,
     update_task,
 )
@@ -43,6 +45,7 @@ class TaskRepository:
         status: TaskStatus | str | None = None,
         domain: str | None = None,
         sort_by_deadline: bool = False,
+        deleted: bool = False,
     ) -> list[dict[str, Any]]:
         stored_status = None
         if status is not None:
@@ -57,6 +60,7 @@ class TaskRepository:
             status=stored_status,
             domain=domain,
             sort_by_deadline=sort_by_deadline,
+            deleted=deleted,
         )
 
     def get(self, task_id: str) -> dict[str, Any] | None:
@@ -73,6 +77,15 @@ class TaskRepository:
 
     def delete(self, task_id: str) -> bool:
         return delete_task(self.db_path, task_id)
+
+    def restore(self, task_id: str) -> bool:
+        return restore_task(self.db_path, task_id)
+
+    def delete_permanently(self, task_id: str) -> bool:
+        return permanently_delete_task(self.db_path, task_id)
+
+    def get_including_deleted(self, task_id: str) -> dict[str, Any] | None:
+        return get_task(self.db_path, task_id, include_deleted=True)
 
     def count(self) -> int:
         return task_count(self.db_path)

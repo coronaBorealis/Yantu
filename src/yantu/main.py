@@ -26,13 +26,24 @@ from werkzeug.serving import BaseWSGIServer, ThreadedWSGIServer
 
 from .common import utc_now
 from .api.ai_routes import ServiceFactory, create_ai_blueprint
+from .api.appearance_routes import create_appearance_blueprint
+from .api.schedule_routes import create_schedule_blueprint
+from .api.time_routes import create_time_blueprint
+from .api.planning_routes import create_planning_blueprint
 from .database.config import DEFAULT_DB_PATH
 from .database.constants import DOMAINS, PRIORITIES, STATUSES
 from .services.task_service import TaskService
+from .services.schedule_service import ScheduleService
+from .services.appearance_service import AppearanceService
+from .services.planning_service import PlanningService
 
 
 RUNTIME_FILE = REPOSITORY_ROOT / "data" / "runtime.json"
-ASSET_FILES = {"styles.css", "app.js"}
+ASSET_FILES = {"styles.css", "theme.css", "app.js"}
+BRAND_ASSETS = {
+    "logo-master.png", "logo-512.png", "logo-192.png", "logo-64.png",
+    "logo-32.png", "logo-16.png", "yantu.ico",
+}
 TASK_FIELDS = {
     "parent_id",
     "project_id",
@@ -162,21 +173,35 @@ def validate_schedule(task: dict[str, Any]) -> None:
 def create_app(
     db_path: Path | str = DEFAULT_DB_PATH,
     llm_service_factory: ServiceFactory | None = None,
+    schedule_ocr_engine=None,
 ) -> Flask:
     app = Flask(__name__)
+    data_directory = Path(db_path).resolve().parent
+    appearance_config = data_directory / "appearance.json"
+    appearance_directory = data_directory / "appearance"
     task_service = TaskService(db_path)
+    schedule_service = ScheduleService(db_path)
+    appearance_service = AppearanceService(appearance_config, appearance_directory)
+    planning_service = PlanningService(db_path)
     app.config.update(
         DB_PATH=str(db_path),
         JSON_AS_ASCII=False,
         SHUTDOWN_TOKEN=None,
         SERVER_SHUTDOWN=None,
         INSTANCE_ID=None,
+        MAX_CONTENT_LENGTH=10 * 1024 * 1024 + 64 * 1024,
     )
     app.register_blueprint(create_ai_blueprint(db_path, llm_service_factory))
+    app.register_blueprint(create_schedule_blueprint(db_path, schedule_ocr_engine))
+    app.register_blueprint(create_time_blueprint(db_path))
+    app.register_blueprint(create_planning_blueprint(db_path))
+    app.register_blueprint(
+        create_appearance_blueprint(appearance_config, appearance_directory)
+    )
 
     @app.after_request
     def prevent_stale_local_assets(response):
-        if request.path == "/" or request.path in {"/app.js", "/styles.css"}:
+        if request.path == "/" or request.path in {"/app.js", "/styles.css", "/theme.css"}:
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
@@ -190,7 +215,13 @@ def create_app(
 
     @app.get("/favicon.ico")
     def favicon():
-        return "", 204
+        return send_from_directory(WEB_ROOT / "assets", "yantu.ico")
+
+    @app.get("/assets/<path:filename>")
+    def brand_asset(filename: str):
+        if filename not in BRAND_ASSETS:
+            return jsonify({"error": "Not found"}), 404
+        return send_from_directory(WEB_ROOT / "assets", filename)
 
     @app.get("/<path:filename>")
     def asset(filename: str):
@@ -232,6 +263,14 @@ def create_app(
         if status and status not in STATUSES:
             raise ValidationError("Invalid status filter")
         return jsonify({"tasks": task_service.list_records(domain=domain, status=status)})
+
+    @app.get("/api/planning/daily")
+    def daily_plan():
+        requested_date = request.args.get("date") or datetime.now().date().isoformat()
+        try:
+            return jsonify(task_service.daily_plan(requested_date))
+        except ValueError as error:
+            raise ValidationError("date must use YYYY-MM-DD") from error
 
     @app.post("/api/tasks")
     def tasks_create():
@@ -297,13 +336,43 @@ def create_app(
             return jsonify({"error": "Task not found"}), 404
         return "", 204
 
+    @app.post("/api/tasks/<task_id>/restore")
+    def tasks_restore(task_id: str):
+        if not task_service.restore(task_id):
+            return jsonify({"error": "Task not found in trash"}), 404
+        return "", 204
+
+    @app.delete("/api/tasks/<task_id>/permanent")
+    def tasks_permanent_delete(task_id: str):
+        if not task_service.delete_permanently(task_id):
+            return jsonify({"error": "Task not found in trash"}), 404
+        return "", 204
+
+    @app.get("/api/trash")
+    def trash_list():
+        return jsonify({
+            "tasks": task_service.list_deleted_records(),
+            "courses": schedule_service.list_courses(deleted=True),
+        })
+
     @app.get("/api/export")
     def export_data():
         return jsonify(
             {
-                "version": 2,
+                "version": 4,
                 "exported_at": utc_now(),
                 "tasks": task_service.list_records(),
+                "deleted_tasks": task_service.list_deleted_records(),
+                "semesters": schedule_service.list_semesters(),
+                "courses": [
+                    schedule_service.get_course(course["id"], include_deleted=True)
+                    for course in (
+                        schedule_service.list_courses()
+                        + schedule_service.list_courses(deleted=True)
+                    )
+                ],
+                "appearance": appearance_service.export_backup(),
+                "planning": planning_service.export_backup(),
             }
         )
 
@@ -352,7 +421,64 @@ def create_app(
             else:
                 task_service.create_record(task)
             imported += 1
-        return jsonify({"imported": imported})
+        deleted_imported = 0
+        for source in payload.get("deleted_tasks") or []:
+            if not isinstance(source, dict):
+                continue
+            restore_id = str(source.get("id") or uuid.uuid4())
+            existing = task_service.get_including_deleted_record(restore_id)
+            if not existing:
+                clean = normalize_task(source)
+                now = utc_now()
+                task_service.create_record({
+                    "id": restore_id, "title": clean["title"],
+                    "domain": clean.get("domain", "inbox"), "subcategory": clean.get("subcategory", ""),
+                    "tags": clean.get("tags", []), "description": clean.get("description", ""),
+                    "created_at": str(source.get("created_at") or now), "updated_at": now,
+                    "start_date": clean.get("start_date"), "due_date": clean.get("due_date"),
+                    "estimated_minutes": clean.get("estimated_minutes", 0),
+                    "actual_minutes": clean.get("actual_minutes", 0), "priority": clean.get("priority", "medium"),
+                    "status": clean.get("status", "not_started"), "progress": clean.get("progress", 0),
+                    "is_recurring": clean.get("is_recurring", 0), "recurrence_rule": clean.get("recurrence_rule", ""),
+                    "notes": clean.get("notes", ""), "completed_at": source.get("completed_at"),
+                    "sort_order": clean.get("sort_order", 0),
+                })
+            task_service.delete(restore_id)
+            deleted_imported += 1
+        semester_imported = 0
+        for semester in payload.get("semesters") or []:
+            schedule_service.save_semester(semester, semester_id=str(semester.get("id") or uuid.uuid4()))
+            semester_imported += 1
+        course_imported = 0
+        for course in payload.get("courses") or []:
+            if not course or schedule_service.get_course(str(course.get("id") or ""), include_deleted=True):
+                continue
+            created = schedule_service.create_course(course)
+            for meeting in course.get("meetings") or []:
+                for exception in meeting.get("exceptions") or []:
+                    if exception.get("kind") == "skip":
+                        schedule_service.skip_occurrence(
+                            meeting["id"],
+                            exception.get("occurrence_date"),
+                        )
+            if course.get("deleted_at"):
+                schedule_service.trash_course(created["id"])
+            course_imported += 1
+        appearance_imported = False
+        if isinstance(payload.get("appearance"), dict):
+            appearance_service.import_backup(payload["appearance"])
+            appearance_imported = True
+        planning_result = {"planning_runs_imported": 0}
+        if isinstance(payload.get("planning"), dict):
+            planning_result = planning_service.import_backup(payload["planning"])
+        return jsonify({
+            "imported": imported,
+            "deleted_imported": deleted_imported,
+            "semesters_imported": semester_imported,
+            "courses_imported": course_imported,
+            "appearance_imported": appearance_imported,
+            **planning_result,
+        })
 
     @app.errorhandler(ValidationError)
     def validation_error(error: ValidationError):
@@ -361,6 +487,10 @@ def create_app(
     @app.errorhandler(404)
     def not_found(_error):
         return jsonify({"error": "Not found"}), 404
+
+    @app.errorhandler(413)
+    def file_too_large(_error):
+        return jsonify({"error": "课表文件不能超过 10 MB"}), 413
 
     return app
 

@@ -11,7 +11,7 @@ from ..common import utc_now
 from .config import DEFAULT_DB_PATH
 from .constants import DOMAINS, PRIORITIES, STATUSES
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 
 def _column_names(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -106,6 +106,7 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                 notes TEXT NOT NULL DEFAULT '',
                 completed_at TEXT,
                 sort_order INTEGER NOT NULL DEFAULT 0
+                ,deleted_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS time_entries (
@@ -131,7 +132,132 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                 ON tasks(parent_id) WHERE parent_id IS NOT NULL;
             CREATE INDEX IF NOT EXISTS idx_time_entries_task_id
                 ON time_entries(task_id);
+
+            CREATE TABLE IF NOT EXISTS semesters (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+                periods_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS schedule_imports (
+                id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                source_hash TEXT NOT NULL,
+                imported_at TEXT NOT NULL,
+                UNIQUE(source_type, source_hash)
+            );
+
+            CREATE TABLE IF NOT EXISTS courses (
+                id TEXT PRIMARY KEY,
+                semester_id TEXT NOT NULL REFERENCES semesters(id) ON DELETE CASCADE,
+                import_id TEXT REFERENCES schedule_imports(id) ON DELETE SET NULL,
+                name TEXT NOT NULL,
+                teacher TEXT NOT NULL DEFAULT '',
+                location TEXT NOT NULL DEFAULT '',
+                color TEXT NOT NULL DEFAULT '#4f77bb',
+                notes TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS course_meetings (
+                id TEXT PRIMARY KEY,
+                course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+                weekday INTEGER NOT NULL CHECK(weekday BETWEEN 1 AND 7),
+                start_period INTEGER NOT NULL CHECK(start_period > 0),
+                end_period INTEGER NOT NULL CHECK(end_period >= start_period),
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                start_week INTEGER NOT NULL CHECK(start_week > 0),
+                end_week INTEGER NOT NULL CHECK(end_week >= start_week),
+                week_pattern TEXT NOT NULL DEFAULT 'all'
+                    CHECK(week_pattern IN ('all', 'odd', 'even', 'custom')),
+                custom_weeks_json TEXT NOT NULL DEFAULT '[]'
+            );
+
+            CREATE TABLE IF NOT EXISTS course_exceptions (
+                id TEXT PRIMARY KEY,
+                meeting_id TEXT NOT NULL REFERENCES course_meetings(id) ON DELETE CASCADE,
+                occurrence_date TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'skip' CHECK(kind IN ('skip')),
+                created_at TEXT NOT NULL,
+                UNIQUE(meeting_id, occurrence_date, kind)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_courses_semester
+                ON courses(semester_id, deleted_at);
+            CREATE INDEX IF NOT EXISTS idx_course_meetings_course
+                ON course_meetings(course_id);
+            CREATE INDEX IF NOT EXISTS idx_course_exceptions_meeting_date
+                ON course_exceptions(meeting_id, occurrence_date);
+
+            CREATE TABLE IF NOT EXISTS planning_profiles (
+                id TEXT PRIMARY KEY,
+                workday_start TEXT NOT NULL DEFAULT '09:00',
+                workday_end TEXT NOT NULL DEFAULT '18:00',
+                active_weekdays_json TEXT NOT NULL DEFAULT '[1,2,3,4,5,6,7]',
+                focus_minutes INTEGER NOT NULL DEFAULT 25 CHECK(focus_minutes BETWEEN 10 AND 120),
+                short_break_minutes INTEGER NOT NULL DEFAULT 5 CHECK(short_break_minutes BETWEEN 1 AND 30),
+                long_break_minutes INTEGER NOT NULL DEFAULT 15 CHECK(long_break_minutes BETWEEN 5 AND 60),
+                long_break_after INTEGER NOT NULL DEFAULT 4 CHECK(long_break_after BETWEEN 2 AND 8),
+                max_continuous_focus INTEGER NOT NULL DEFAULT 100 CHECK(max_continuous_focus BETWEEN 25 AND 240),
+                buffer_minutes INTEGER NOT NULL DEFAULT 10 CHECK(buffer_minutes BETWEEN 0 AND 60),
+                use_pomodoro INTEGER NOT NULL DEFAULT 1 CHECK(use_pomodoro IN (0,1)),
+                timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS planning_runs (
+                id TEXT PRIMARY KEY,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('confirmed','cancelled')),
+                strategy TEXT NOT NULL CHECK(strategy IN ('rule','ai','manual')),
+                input_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                warnings_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                confirmed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS plan_blocks (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES planning_runs(id) ON DELETE CASCADE,
+                task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+                block_date TEXT NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                block_type TEXT NOT NULL CHECK(block_type IN ('focus','short_break','long_break','buffer')),
+                planned_minutes INTEGER NOT NULL CHECK(planned_minutes > 0),
+                source TEXT NOT NULL CHECK(source IN ('rule','ai','manual')),
+                status TEXT NOT NULL DEFAULT 'planned' CHECK(status IN ('planned','completed','skipped')),
+                locked INTEGER NOT NULL DEFAULT 0 CHECK(locked IN (0,1)),
+                rationale TEXT NOT NULL DEFAULT '',
+                sequence INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_plan_blocks_date
+                ON plan_blocks(block_date, start_time);
+            CREATE INDEX IF NOT EXISTS idx_plan_blocks_run
+                ON plan_blocks(run_id, sequence);
             """
+        )
+        now = utc_now()
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO planning_profiles
+                (id, created_at, updated_at)
+            VALUES ('default', ?, ?)
+            """,
+            (now, now),
         )
         _add_missing_columns(connection, "projects", {"category": "TEXT NOT NULL DEFAULT '个人'"})
         _add_missing_columns(
@@ -142,6 +268,7 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                 "deadline": "TEXT",
                 "estimated_hours": "REAL NOT NULL DEFAULT 0 CHECK(estimated_hours >= 0)",
                 "actual_hours": "REAL NOT NULL DEFAULT 0 CHECK(actual_hours >= 0)",
+                "deleted_at": "TEXT",
             },
         )
         _add_missing_columns(
@@ -258,8 +385,9 @@ def list_tasks(
     status: str | None = None,
     project_id: str | None = None,
     sort_by_deadline: bool = False,
+    deleted: bool = False,
 ) -> list[dict[str, Any]]:
-    clauses: list[str] = []
+    clauses: list[str] = ["deleted_at IS NOT NULL" if deleted else "deleted_at IS NULL"]
     parameters: list[str] = []
     if domain:
         clauses.append("domain = ?")
@@ -291,9 +419,14 @@ def list_tasks(
         return [task_from_row(row) for row in connection.execute(sql, parameters)]
 
 
-def get_task(db_path: Path | str, task_id: str) -> dict[str, Any] | None:
+def get_task(
+    db_path: Path | str, task_id: str, *, include_deleted: bool = False
+) -> dict[str, Any] | None:
     with database(db_path) as connection:
-        row = connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        suffix = "" if include_deleted else " AND deleted_at IS NULL"
+        row = connection.execute(
+            f"SELECT * FROM tasks WHERE id = ?{suffix}", (task_id,)
+        ).fetchone()
         return task_from_row(row) if row else None
 
 
@@ -355,10 +488,34 @@ def update_task(db_path: Path | str, task_id: str, changes: dict[str, Any]) -> d
 
 def delete_task(db_path: Path | str, task_id: str) -> bool:
     with database(db_path) as connection:
-        cursor = connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        cursor = connection.execute(
+            "UPDATE tasks SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+            (utc_now(), utc_now(), task_id),
+        )
+        return cursor.rowcount > 0
+
+
+def restore_task(db_path: Path | str, task_id: str) -> bool:
+    with database(db_path) as connection:
+        cursor = connection.execute(
+            "UPDATE tasks SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL",
+            (utc_now(), task_id),
+        )
+        return cursor.rowcount > 0
+
+
+def permanently_delete_task(db_path: Path | str, task_id: str) -> bool:
+    with database(db_path) as connection:
+        cursor = connection.execute(
+            "DELETE FROM tasks WHERE id = ? AND deleted_at IS NOT NULL", (task_id,)
+        )
         return cursor.rowcount > 0
 
 
 def task_count(db_path: Path | str) -> int:
     with database(db_path) as connection:
-        return int(connection.execute("SELECT COUNT(*) FROM tasks").fetchone()[0])
+        return int(
+            connection.execute(
+                "SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL"
+            ).fetchone()[0]
+        )

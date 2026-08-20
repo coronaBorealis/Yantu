@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -60,6 +61,46 @@ class TaskService:
 
     def count(self) -> int:
         return self.repository.count()
+
+    def daily_plan(self, on_date: str) -> dict[str, Any]:
+        """Allocate remaining estimates across the remaining active calendar days."""
+        target = datetime.strptime(on_date, "%Y-%m-%d").date()
+        allocations: list[dict[str, Any]] = []
+        for task in self.repository.list():
+            if task.get("status") not in {"not_started", "in_progress", "waiting"}:
+                continue
+            estimated = max(0, int(task.get("estimated_minutes") or 0))
+            actual = max(0, int(task.get("actual_minutes") or 0))
+            remaining = max(0, estimated - actual)
+            if remaining == 0:
+                continue
+            start = self._optional_date(task.get("start_date"))
+            deadline = self._optional_date(task.get("due_date") or task.get("deadline"))
+            minutes = 0
+            reason = ""
+            if deadline and deadline < target:
+                minutes, reason = remaining, "overdue"
+            elif deadline and target == deadline:
+                minutes, reason = remaining, "deadline"
+            elif start and deadline and start <= target < deadline:
+                remaining_days = (deadline - target).days + 1
+                minutes, reason = math.ceil(remaining / remaining_days), "distributed"
+            elif start and not deadline and start == target:
+                minutes, reason = remaining, "start"
+            if minutes:
+                allocations.append(
+                    {
+                        "task_id": str(task["id"]),
+                        "planned_minutes": minutes,
+                        "remaining_minutes": remaining,
+                        "reason": reason,
+                    }
+                )
+        return {
+            "date": target.isoformat(),
+            "total_minutes": sum(item["planned_minutes"] for item in allocations),
+            "allocations": allocations,
+        }
 
     def create(self, values: Mapping[str, Any]) -> Task:
         title = self._title(values.get("title"))
@@ -144,6 +185,18 @@ class TaskService:
     def delete(self, task_id: str) -> bool:
         return self.repository.delete(task_id)
 
+    def restore(self, task_id: str) -> bool:
+        return self.repository.restore(task_id)
+
+    def delete_permanently(self, task_id: str) -> bool:
+        return self.repository.delete_permanently(task_id)
+
+    def list_deleted_records(self) -> list[dict[str, Any]]:
+        return self.repository.list(deleted=True)
+
+    def get_including_deleted_record(self, task_id: str) -> dict[str, Any] | None:
+        return self.repository.get_including_deleted(task_id)
+
     @staticmethod
     def _title(value: Any) -> str:
         title = str(value or "").strip()
@@ -161,6 +214,12 @@ class TaskService:
             return datetime.strptime(str(value), "%Y-%m-%d").date().isoformat()
         except ValueError as exc:
             raise ValueError("deadline 必须使用 YYYY-MM-DD") from exc
+
+    @staticmethod
+    def _optional_date(value: Any):
+        if value in (None, ""):
+            return None
+        return datetime.strptime(str(value), "%Y-%m-%d").date()
 
     @staticmethod
     def _hours(value: Any, label: str) -> float:

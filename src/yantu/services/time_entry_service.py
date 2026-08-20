@@ -41,6 +41,7 @@ class TimeEntryService:
                 "created_at": utc_now(),
             }
         )
+        self._adjust_task_actual(task_id, duration)
         return TimeEntry.from_record(record)
 
     def update(self, entry_id: str, values: Mapping[str, Any]) -> TimeEntry | None:
@@ -64,10 +65,23 @@ class TimeEntryService:
         end_time = changes.get("end_time", existing["end_time"])
         self._validate_time_range(start_time, end_time)
         record = self.repository.update(entry_id, changes)
+        if record and "duration" in changes:
+            self._adjust_task_actual(str(existing["task_id"]), int(record["duration"]) - int(existing["duration"]))
         return TimeEntry.from_record(record) if record else None
 
     def delete(self, entry_id: str) -> bool:
-        return self.repository.delete(entry_id)
+        existing = self.repository.get(entry_id)
+        if not existing or not self.repository.delete(entry_id):
+            return False
+        self._adjust_task_actual(str(existing["task_id"]), -int(existing["duration"] or 0))
+        return True
+
+    def _adjust_task_actual(self, task_id: str, delta: int) -> None:
+        task = self.tasks.get(task_id)
+        if not task:
+            return
+        actual = max(0, int(task.get("actual_minutes") or 0) + delta)
+        self.tasks.update(task_id, {"actual_minutes": actual, "updated_at": utc_now()})
 
     @staticmethod
     def _timestamp(value: Any, field: str, *, required: bool) -> str | None:

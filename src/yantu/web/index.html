@@ -3,14 +3,24 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#f7f8f3">
+  <meta name="theme-color" content="#f5f7f3" id="theme-color">
   <title>研途 · 研究生个人工作台</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="/assets/logo-32.png">
+  <link rel="apple-touch-icon" href="/assets/logo-192.png">
+  <script>
+    try {
+      const cached=JSON.parse(localStorage.getItem('yantu.appearance.cache.v1')||'null');
+      if(cached){document.documentElement.dataset.theme=cached.resolved_mode||cached.mode||'light';document.documentElement.dataset.preset=cached.preset||'forest'}
+    } catch (_) {}
+  </script>
   <link rel="stylesheet" href="styles.css?v=20260811.3">
+  <link rel="stylesheet" href="theme.css?v=20260819.1">
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar">
-      <div class="brand"><span class="brand-mark">研</span><div><strong>研途</strong><small>研究生个人工作台</small></div></div>
+      <div class="brand"><img class="brand-mark" src="/assets/logo-64.png" alt="研途 Logo"><div><strong>研途</strong><small>研究生个人工作台</small></div></div>
       <nav id="nav" aria-label="主导航">
         <button class="nav-item active" data-view="today"><span>⌂</span>今日</button>
         <button class="nav-item" data-view="inbox"><span>＋</span>收件箱 <b id="count-inbox">0</b></button>
@@ -21,9 +31,12 @@
         <p class="nav-label">规划</p>
         <button class="nav-item" data-view="week"><span>▦</span>未来 7 天</button>
         <button class="nav-item" data-view="month"><span>□</span>月历</button>
+        <button class="nav-item" data-view="schedule"><span>▤</span>课表</button>
         <button class="nav-item" data-view="ai"><span>◇</span>AI 任务拆解</button>
+        <button class="nav-item" data-view="trash"><span>♲</span>回收站</button>
       </nav>
       <div class="sidebar-bottom">
+        <button class="quiet-btn" id="appearance-btn">外观设置</button>
         <button class="quiet-btn" id="export-btn">导出 SQLite 数据备份</button>
         <label class="quiet-btn file-btn">导入 JSON 备份<input type="file" id="import-file" accept="application/json"></label>
         <p><span class="storage-dot"></span>SQLite 本机持久化</p>
@@ -37,6 +50,7 @@
         <div class="top-actions">
           <label class="compact-field"><span>状态</span><select id="status-filter"><option value="all">全部状态</option><option value="not_started">未开始</option><option value="in_progress">进行中</option><option value="waiting">等待</option><option value="completed">已完成</option><option value="cancelled">已取消</option></select></label>
           <label class="compact-field"><span>子分类</span><select id="subcategory-filter"><option value="all">全部</option></select></label>
+          <button class="focus-launch" id="focus-btn"><span>◉</span> 专注</button>
           <button class="primary-btn" id="add-btn"><span>＋</span> 新建任务</button>
         </div>
       </header>
@@ -73,7 +87,69 @@
       <div class="dialog-actions"><button type="button" class="danger-btn hidden" id="delete-btn">删除任务</button><span></span><button type="button" class="secondary-btn" id="cancel-btn">取消</button><button type="submit" class="primary-btn">保存任务</button></div>
     </form>
   </dialog>
-  <div class="toast" id="toast" role="status"></div>
-  <script src="app.js?v=20260811.3"></script>
+  <dialog id="schedule-dialog">
+    <form id="schedule-form">
+      <div class="dialog-head"><div><p>本地解析，不上传云端</p><h2>导入课表</h2></div><button type="button" class="icon-btn" id="close-schedule-dialog" aria-label="关闭">×</button></div>
+      <div id="schedule-step-input">
+        <label class="field"><span>课表文件 *</span><input type="file" id="schedule-file" accept=".png,.jpg,.jpeg,.xlsx,.csv" required></label>
+        <div class="form-grid three">
+          <label class="field"><span>学期名称 *</span><input id="semester-name" required placeholder="2026 秋季学期"></label>
+          <label class="field"><span>学期开始 *</span><input type="date" id="semester-start" required></label>
+          <label class="field"><span>学期结束 *</span><input type="date" id="semester-end" required></label>
+        </div>
+        <p class="form-hint">支持 PNG/JPG、XLSX、CSV，最大 10 MB。图片首次识别需要初始化本地 OCR 模型。</p>
+        <div class="dialog-actions"><span></span><button type="button" class="secondary-btn" id="cancel-schedule">取消</button><button type="submit" class="primary-btn" id="recognize-schedule">识别并预览</button></div>
+      </div>
+      <div id="schedule-preview" class="hidden"></div>
+    </form>
+  </dialog>
+  <dialog id="course-dialog">
+    <form id="course-form">
+      <div class="dialog-head"><div><p>修改将影响整门课程</p><h2>编辑课程</h2></div><button type="button" class="icon-btn" id="close-course-dialog" aria-label="关闭">×</button></div>
+      <input type="hidden" id="course-id">
+      <label class="field"><span>课程名称 *</span><input id="course-name" required maxlength="120"></label>
+      <div class="form-grid"><label class="field"><span>教师</span><input id="course-teacher"></label><label class="field"><span>地点</span><input id="course-location"></label></div>
+      <div class="form-grid three"><label class="field"><span>星期</span><select id="course-weekday"><option value="1">周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="7">周日</option></select></label><label class="field"><span>开始节次</span><input type="number" id="course-start-period" min="1"></label><label class="field"><span>结束节次</span><input type="number" id="course-end-period" min="1"></label></div>
+      <div class="form-grid"><label class="field"><span>上课时间</span><input type="time" id="course-start-time"></label><label class="field"><span>下课时间</span><input type="time" id="course-end-time"></label></div>
+      <div class="form-grid three"><label class="field"><span>开始周</span><input type="number" id="course-start-week" min="1"></label><label class="field"><span>结束周</span><input type="number" id="course-end-week" min="1"></label><label class="field"><span>周次规则</span><select id="course-week-pattern"><option value="all">每周</option><option value="odd">单周</option><option value="even">双周</option></select></label></div>
+      <label class="field"><span>备注</span><textarea id="course-notes" rows="3"></textarea></label>
+      <div class="dialog-actions"><span></span><button type="button" class="secondary-btn" id="cancel-course">取消</button><button type="submit" class="primary-btn">保存课程</button></div>
+    </form>
+  </dialog>
+  <dialog id="appearance-dialog" class="appearance-dialog">
+    <form id="appearance-form">
+      <div class="dialog-head"><div><p>只保存在这台电脑</p><h2>外观设置</h2></div><button type="button" class="icon-btn" id="close-appearance" aria-label="关闭">×</button></div>
+      <div class="appearance-layout">
+        <div class="appearance-controls">
+          <fieldset class="appearance-group"><legend>显示模式</legend><div class="segmented" id="appearance-modes"><label><input type="radio" name="appearance-mode" value="system">跟随系统</label><label><input type="radio" name="appearance-mode" value="light">浅色</label><label><input type="radio" name="appearance-mode" value="dark">深色</label></div></fieldset>
+          <fieldset class="appearance-group"><legend>主题预设</legend><div class="preset-grid" id="appearance-presets"><label data-preset="forest"><input type="radio" name="appearance-preset" value="forest"><i></i><span>研林</span></label><label data-preset="paper"><input type="radio" name="appearance-preset" value="paper"><i></i><span>纸页</span></label><label data-preset="mist"><input type="radio" name="appearance-preset" value="mist"><i></i><span>晨雾</span></label><label data-preset="night"><input type="radio" name="appearance-preset" value="night"><i></i><span>夜航</span></label></div></fieldset>
+          <label class="field"><span>背景类型</span><select id="appearance-background-type"><option value="none">无背景</option><option value="solid">纯色</option><option value="gradient">渐变</option><option value="image">本地图片</option></select></label>
+          <div id="appearance-solid" class="appearance-option"><label class="color-field"><span>背景颜色</span><input type="color" id="appearance-color"></label></div>
+          <div id="appearance-gradient" class="appearance-option gradient-fields"><label class="color-field"><span>起始颜色</span><input type="color" id="appearance-gradient-start"></label><label class="color-field"><span>结束颜色</span><input type="color" id="appearance-gradient-end"></label><label class="field"><span>角度</span><input type="range" id="appearance-gradient-angle" min="0" max="360"><output id="appearance-angle-output"></output></label></div>
+          <div id="appearance-image" class="appearance-option"><label class="image-drop">选择 PNG、JPG 或 WebP（最大 8 MB）<input type="file" id="appearance-image-file" accept="image/png,image/jpeg,image/webp"></label><button type="button" class="danger-link" id="remove-background">移除当前图片</button></div>
+          <label class="field opacity-field"><span>面板清晰度</span><input type="range" id="appearance-opacity" min="0.84" max="0.98" step="0.01"><output id="appearance-opacity-output"></output></label>
+        </div>
+        <div class="theme-preview" id="theme-preview" aria-label="主题效果预览"><img src="/assets/logo-64.png" alt=""><div><small>下一步</small><strong>整理本周实验记录</strong><span>今天 18:00 · 科研</span></div></div>
+      </div>
+      <p class="contrast-note" id="contrast-note">正在检测背景可读性…</p>
+      <div class="dialog-actions"><button type="button" class="danger-btn" id="reset-appearance">恢复默认</button><span></span><button type="button" class="secondary-btn" id="cancel-appearance">取消</button><button type="submit" class="primary-btn">保存外观</button></div>
+    </form>
+  </dialog>
+  <dialog id="planning-dialog" class="planning-dialog">
+    <form id="planning-form">
+      <div class="dialog-head"><div><p>规则引擎先预览，确认后写入</p><h2>今日时间规划</h2></div><button type="button" class="icon-btn" id="close-planning" aria-label="关闭规划">×</button></div>
+      <div class="planning-preferences">
+        <div class="form-grid"><label class="field"><span>可工作时段</span><div class="time-pair"><input type="time" id="plan-work-start"><b>至</b><input type="time" id="plan-work-end"></div></label><label class="field"><span>规划节拍</span><select id="plan-use-pomodoro"><option value="true">番茄节拍</option><option value="false">自由工作 + 强制缓冲</option></select></label></div>
+        <div class="form-grid three"><label class="field"><span>单次专注</span><input type="number" id="plan-focus" min="10" max="120"><small>分钟</small></label><label class="field"><span>短休息</span><input type="number" id="plan-short-break" min="1" max="30"><small>分钟</small></label><label class="field"><span>长休息</span><input type="number" id="plan-long-break" min="5" max="60"><small>分钟</small></label></div>
+        <div class="form-grid three"><label class="field"><span>几轮后长休息</span><input type="number" id="plan-long-after" min="2" max="8"></label><label class="field"><span>最长连续专注</span><input type="number" id="plan-max-continuous" min="25" max="240"><small>分钟</small></label><label class="field"><span>课程前后缓冲</span><input type="number" id="plan-buffer" min="0" max="60"><small>分钟</small></label></div>
+      </div>
+      <div id="planning-preview" class="planning-preview"><div class="empty"><strong>先生成一个可检查的时间表</strong>会综合任务优先级、Deadline、课程占用和休息偏好。</div></div>
+      <div class="dialog-actions"><span></span><button type="button" class="secondary-btn" id="cancel-planning">取消</button><button type="button" class="secondary-btn" id="preview-planning">生成预览</button><button type="submit" class="primary-btn hidden" id="confirm-planning">确认时间表</button></div>
+    </form>
+  </dialog>
+  <section id="focus-panel" class="focus-panel hidden" aria-label="专注计时器"></section>
+  <div id="context-menu" class="context-menu hidden" role="menu" aria-label="快捷操作"></div>
+  <div class="toast" id="toast" role="status"><span id="toast-text"></span><button id="toast-action" class="hidden"></button></div>
+  <script src="app.js?v=20260820.2"></script>
 </body>
 </html>

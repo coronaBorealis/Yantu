@@ -130,3 +130,44 @@ class TimeEntry:
             note=str(record.get("note") or ""),
             created_at=str(record["created_at"]),
         )
+
+
+@dataclass(frozen=True)
+class Semester:
+    id: str
+    name: str
+    start_date: str
+    end_date: str
+    timezone: str
+    periods: list[dict[str, Any]]
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class Course:
+    id: str
+    semester_id: str
+    name: str
+    teacher: str
+    location: str
+    color: str
+    notes: str
+    created_at: str
+    updated_at: str
+    deleted_at: str | None = None
+
+
+@dataclass(frozen=True)
+class CourseMeeting:
+    id: str
+    course_id: str
+    weekday: int
+    start_period: int
+    end_period: int
+    start_time: str
+    end_time: str
+    start_week: int
+    end_week: int
+    week_pattern: str
+    custom_weeks: list[int]

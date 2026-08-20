@@ -20,6 +20,8 @@ venv/
 *.db-shm
 *.db-wal
 data/runtime.json
+data/appearance.json
+data/appearance/
 *.log
 
 # Local/offline dependencies and build output
