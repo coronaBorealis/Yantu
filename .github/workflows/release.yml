@@ -58,8 +58,13 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not $releaseId) { throw "Could not create the draft release." }
           foreach ($asset in @($installer, $checksum)) {
             $assetName = [System.Uri]::EscapeDataString((Split-Path -Leaf $asset))
-            gh api --hostname uploads.github.com --method POST -H "Content-Type: application/octet-stream" `
-              --input $asset "repos/$env:GITHUB_REPOSITORY/releases/$releaseId/assets?name=$assetName" | Out-Null
+            $uploadUrl = "https://uploads.github.com/repos/$env:GITHUB_REPOSITORY/releases/$releaseId/assets?name=$assetName"
+            & curl.exe --fail-with-body --silent --show-error --request POST `
+              --header "Accept: application/vnd.github+json" `
+              --header "Authorization: Bearer $env:GH_TOKEN" `
+              --header "X-GitHub-Api-Version: 2022-11-28" `
+              --header "Content-Type: application/octet-stream" `
+              --data-binary "@$asset" $uploadUrl | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "Could not upload release asset: $asset" }
           }
           $assetCount = gh api "repos/$env:GITHUB_REPOSITORY/releases/$releaseId" --jq ".assets | length"
