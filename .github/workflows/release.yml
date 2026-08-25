@@ -58,7 +58,7 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not $releaseId) { throw "Could not create the draft release." }
           foreach ($asset in @($installer, $checksum)) {
             $assetName = [System.Uri]::EscapeDataString((Split-Path -Leaf $asset))
-            gh api --method POST -H "Content-Type: application/octet-stream" `
+            gh api --hostname uploads.github.com --method POST -H "Content-Type: application/octet-stream" `
               --input $asset "repos/$env:GITHUB_REPOSITORY/releases/$releaseId/assets?name=$assetName" | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "Could not upload release asset: $asset" }
           }
