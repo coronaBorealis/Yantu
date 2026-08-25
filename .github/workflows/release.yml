@@ -52,10 +52,10 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             $assetCount = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:GITHUB_REF_NAME" --jq ".assets | length"
             if ([int]$assetCount -eq 0) {
-              gh release delete $env:GITHUB_REF_NAME --yes
-            } else {
-              gh release upload $env:GITHUB_REF_NAME @assets --clobber
-              exit 0
+              throw "The release already exists without assets. Publish with a new tag."
             }
+            exit 0
           }
-          gh release create $env:GITHUB_REF_NAME @assets --title "Yantu $env:GITHUB_REF_NAME" --generate-notes --latest
+          gh release create $env:GITHUB_REF_NAME --draft --title "Yantu $env:GITHUB_REF_NAME" --generate-notes
+          gh release upload $env:GITHUB_REF_NAME @assets
+          gh release edit $env:GITHUB_REF_NAME --draft=false --latest
