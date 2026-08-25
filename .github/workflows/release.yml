@@ -41,13 +41,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $assets = @(
-            Get-ChildItem -Path "dist/installer/*.exe", "dist/installer/*.sha256" -File |
-              Select-Object -ExpandProperty FullName
-          )
-          if ($assets.Count -eq 0) {
-            throw "No installer assets were found."
-          }
+          $installer = Get-ChildItem -Path "dist/installer/*.exe" -File | Select-Object -ExpandProperty FullName -First 1
+          $checksum = Get-ChildItem -Path "dist/installer/*.sha256" -File | Select-Object -ExpandProperty FullName -First 1
+          if (-not $installer -or -not $checksum) { throw "Installer assets were not found." }
           gh release view $env:GITHUB_REF_NAME 2>$null
           if ($LASTEXITCODE -eq 0) {
             $assetCount = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:GITHUB_REF_NAME" --jq ".assets | length"
@@ -57,5 +53,8 @@ jobs:
             exit 0
           }
           gh release create $env:GITHUB_REF_NAME --draft --title "Yantu $env:GITHUB_REF_NAME" --generate-notes
-          gh release upload $env:GITHUB_REF_NAME @assets
+          if ($LASTEXITCODE -ne 0) { throw "Could not create the draft release." }
+          gh release upload $env:GITHUB_REF_NAME $installer $checksum
+          if ($LASTEXITCODE -ne 0) { throw "Could not upload the installer assets to the draft release." }
           gh release edit $env:GITHUB_REF_NAME --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw "Could not publish the completed draft release." }
