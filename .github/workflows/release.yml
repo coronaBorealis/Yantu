@@ -52,9 +52,18 @@ jobs:
             }
             exit 0
           }
-          gh release create $env:GITHUB_REF_NAME --draft --title "Yantu $env:GITHUB_REF_NAME" --generate-notes
-          if ($LASTEXITCODE -ne 0) { throw "Could not create the draft release." }
-          gh release upload $env:GITHUB_REF_NAME $installer $checksum
-          if ($LASTEXITCODE -ne 0) { throw "Could not upload the installer assets to the draft release." }
-          gh release edit $env:GITHUB_REF_NAME --draft=false --latest
+          $releaseId = gh api --method POST "repos/$env:GITHUB_REPOSITORY/releases" `
+            -f "tag_name=$env:GITHUB_REF_NAME" -f "name=Yantu $env:GITHUB_REF_NAME" `
+            -F draft=true -F prerelease=false -F generate_release_notes=true --jq ".id"
+          if ($LASTEXITCODE -ne 0 -or -not $releaseId) { throw "Could not create the draft release." }
+          foreach ($asset in @($installer, $checksum)) {
+            $assetName = [System.Uri]::EscapeDataString((Split-Path -Leaf $asset))
+            gh api --method POST -H "Content-Type: application/octet-stream" `
+              --input $asset "repos/$env:GITHUB_REPOSITORY/releases/$releaseId/assets?name=$assetName" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Could not upload release asset: $asset" }
+          }
+          $assetCount = gh api "repos/$env:GITHUB_REPOSITORY/releases/$releaseId" --jq ".assets | length"
+          if ($LASTEXITCODE -ne 0 -or [int]$assetCount -ne 2) { throw "Release asset verification failed." }
+          gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/releases/$releaseId" `
+            -F draft=false -f make_latest=true | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "Could not publish the completed draft release." }
