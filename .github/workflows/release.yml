@@ -41,6 +41,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          $ErrorActionPreference = "Stop"
           $installer = Get-ChildItem -Path "dist/installer/*.exe" -File | Select-Object -ExpandProperty FullName -First 1
           $checksum = Get-ChildItem -Path "dist/installer/*.sha256" -File | Select-Object -ExpandProperty FullName -First 1
           if (-not $installer -or -not $checksum) { throw "Installer assets were not found." }
@@ -56,16 +57,17 @@ jobs:
             -f "tag_name=$env:GITHUB_REF_NAME" -f "name=Yantu $env:GITHUB_REF_NAME" `
             -F draft=true -F prerelease=false -F generate_release_notes=true --jq ".id"
           if ($LASTEXITCODE -ne 0 -or -not $releaseId) { throw "Could not create the draft release." }
+          $uploadHeaders = @{
+            Accept = "application/vnd.github+json"
+            Authorization = "Bearer $env:GH_TOKEN"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
           foreach ($asset in @($installer, $checksum)) {
             $assetName = [System.Uri]::EscapeDataString((Split-Path -Leaf $asset))
             $uploadUrl = "https://uploads.github.com/repos/$env:GITHUB_REPOSITORY/releases/$releaseId/assets?name=$assetName"
-            & curl.exe --fail-with-body --silent --show-error --request POST `
-              --header "Accept: application/vnd.github+json" `
-              --header "Authorization: Bearer $env:GH_TOKEN" `
-              --header "X-GitHub-Api-Version: 2022-11-28" `
-              --header "Content-Type: application/octet-stream" `
-              --data-binary "@$asset" $uploadUrl | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "Could not upload release asset: $asset" }
+            $uploaded = Invoke-RestMethod -Method Post -Uri $uploadUrl -Headers $uploadHeaders `
+              -ContentType "application/octet-stream" -InFile $asset
+            if (-not $uploaded.id) { throw "GitHub did not confirm release asset: $asset" }
           }
           $assetCount = gh api "repos/$env:GITHUB_REPOSITORY/releases/$releaseId" --jq ".assets | length"
           if ($LASTEXITCODE -ne 0 -or [int]$assetCount -ne 2) { throw "Release asset verification failed." }
