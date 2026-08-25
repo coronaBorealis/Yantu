@@ -41,8 +41,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          $assets = @(
+            Get-ChildItem -Path "dist/installer/*.exe", "dist/installer/*.sha256" -File |
+              Select-Object -ExpandProperty FullName
+          )
+          if ($assets.Count -eq 0) {
+            throw "No installer assets were found."
+          }
           gh release view $env:GITHUB_REF_NAME 2>$null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $env:GITHUB_REF_NAME --title "Yantu $env:GITHUB_REF_NAME" --generate-notes
+            gh release create $env:GITHUB_REF_NAME @assets --title "Yantu $env:GITHUB_REF_NAME" --generate-notes
+          } else {
+            gh release upload $env:GITHUB_REF_NAME @assets --clobber
           }
-          gh release upload $env:GITHUB_REF_NAME dist/installer/*.exe dist/installer/*.sha256 --clobber
