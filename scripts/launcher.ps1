@@ -48,17 +48,18 @@ try {
     Write-Host "Yantu project: $projectRoot"
     Write-Host "Python: $plannerPython ($pythonVersion)"
 
-    & $plannerPython -c "import flask, dotenv" 2>$null
+    & $plannerPython -c "import flask, dotenv, keyring" 2>$null
     if ($LASTEXITCODE -ne 0) {
         throw "Yantu dependencies are missing. Run 'conda activate planner' and then 'pip install -r requirements.txt'."
     }
 
-    $runtimeFile = Join-Path $projectRoot "data\runtime.json"
+    $dataRoot = if ($env:YANTU_DATA_DIR) { [System.IO.Path]::GetFullPath($env:YANTU_DATA_DIR) } else { Join-Path $projectRoot "data" }
+    $runtimeFile = Join-Path $dataRoot "runtime.json"
     if (Test-Path -LiteralPath $runtimeFile) {
         try {
             $runtime = Get-Content -Raw -LiteralPath $runtimeFile | ConvertFrom-Json
             $health = Invoke-RestMethod -Uri ($runtime.url + "/api/health") -TimeoutSec 2
-            $expectedDatabase = [System.IO.Path]::GetFullPath((Join-Path $projectRoot "data\yantu.db"))
+            $expectedDatabase = [System.IO.Path]::GetFullPath((Join-Path $dataRoot "yantu.db"))
             if ($health.status -eq "ok" -and
                 $health.instance_id -eq $runtime.instance_id -and
                 [System.IO.Path]::GetFullPath($health.database) -eq $expectedDatabase) {

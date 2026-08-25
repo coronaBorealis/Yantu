@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#f5f7f3" id="theme-color">
+  <meta name="yantu-request-token" content="__YANTU_REQUEST_TOKEN__">
   <title>研途 · 研究生个人工作台</title>
   <link rel="icon" href="/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" sizes="32x32" href="/assets/logo-32.png">
@@ -36,9 +37,7 @@
         <button class="nav-item" data-view="trash"><span>♲</span>回收站</button>
       </nav>
       <div class="sidebar-bottom">
-        <button class="quiet-btn" id="appearance-btn">外观设置</button>
-        <button class="quiet-btn" id="export-btn">导出 SQLite 数据备份</button>
-        <label class="quiet-btn file-btn">导入 JSON 备份<input type="file" id="import-file" accept="application/json"></label>
+        <button class="quiet-btn" id="settings-btn">设置中心</button>
         <p><span class="storage-dot"></span>SQLite 本机持久化</p>
       </div>
     </aside>
@@ -67,24 +66,66 @@
         <label class="field"><span>一级领域 *</span><select id="task-domain"><option value="research">科研</option><option value="course">课程</option><option value="personal">个人</option><option value="inbox">收件箱（稍后整理）</option></select></label>
         <label class="field"><span>二级分类 / 标签</span><input id="task-subcategory" maxlength="60" placeholder="论文阅读、实验、作业……"></label>
       </div>
-      <label class="field full"><span>描述</span><textarea id="task-description" rows="2" maxlength="1000" placeholder="任务背景、完成标准或下一步行动"></textarea></label>
       <div class="form-grid three">
-        <label class="field"><span>开始日期</span><input type="date" id="task-start-date"></label>
         <label class="field"><span>截止日期</span><input type="date" id="task-due-date"></label>
+        <label class="field"><span>预计耗时（分钟）</span><input type="number" id="task-estimated" min="0" max="100000" step="5" value="60"></label>
         <label class="field"><span>优先级</span><select id="task-priority"><option value="urgent">紧急</option><option value="high">高</option><option value="medium" selected>中</option><option value="low">低</option></select></label>
       </div>
-      <div class="form-grid three">
-        <label class="field"><span>状态</span><select id="task-status"><option value="not_started">未开始</option><option value="in_progress">进行中</option><option value="waiting">等待</option><option value="completed">已完成</option><option value="cancelled">已取消</option></select></label>
-        <label class="field"><span>完成度（%）</span><input type="number" id="task-progress" min="0" max="100" step="5" value="0"></label>
-        <label class="field"><span>标签（逗号分隔）</span><input id="task-tags" maxlength="200" placeholder="导师, 组会"></label>
-      </div>
-      <div class="form-grid">
-        <label class="field"><span>预计耗时（分钟）</span><input type="number" id="task-estimated" min="0" max="100000" step="5" value="60"></label>
-        <label class="field"><span>实际耗时（分钟）</span><input type="number" id="task-actual" min="0" max="100000" step="5" value="0"></label>
-      </div>
-      <div class="repeat-row"><label><input type="checkbox" id="task-recurring"> 重复任务</label><input id="task-recurrence" maxlength="100" placeholder="例如：每月最后一个周五" disabled></div>
-      <label class="field full"><span>备注</span><textarea id="task-notes" rows="2" maxlength="1000" placeholder="资料位置、临时提醒或复盘记录"></textarea></label>
+      <details class="advanced-settings">
+        <summary>更多设置 <span>描述、状态、标签、重复和实际耗时</span></summary>
+        <label class="field full"><span>描述</span><textarea id="task-description" rows="2" maxlength="1000" placeholder="任务背景、完成标准或下一步行动"></textarea></label>
+        <div class="form-grid three">
+          <label class="field"><span>开始日期</span><input type="date" id="task-start-date"></label>
+          <label class="field"><span>状态</span><select id="task-status"><option value="not_started">未开始</option><option value="in_progress">进行中</option><option value="waiting">等待</option><option value="completed">已完成</option><option value="cancelled">已取消</option></select></label>
+          <label class="field"><span>完成度（%）</span><input type="number" id="task-progress" min="0" max="100" step="5" value="0"></label>
+        </div>
+        <div class="form-grid">
+          <label class="field"><span>标签（逗号分隔）</span><input id="task-tags" maxlength="200" placeholder="导师, 组会"></label>
+          <label class="field"><span>实际耗时（分钟）</span><input type="number" id="task-actual" min="0" max="100000" step="5" value="0"><small>优先由专注记录自动累计；手动修改会改变统计。</small></label>
+        </div>
+        <div class="repeat-row"><label><input type="checkbox" id="task-recurring"> 重复任务</label><input id="task-recurrence" maxlength="100" placeholder="例如：每月最后一个周五" disabled></div>
+        <label class="field full"><span>备注</span><textarea id="task-notes" rows="2" maxlength="1000" placeholder="资料位置、临时提醒或复盘记录"></textarea></label>
+      </details>
       <div class="dialog-actions"><button type="button" class="danger-btn hidden" id="delete-btn">删除任务</button><span></span><button type="button" class="secondary-btn" id="cancel-btn">取消</button><button type="submit" class="primary-btn">保存任务</button></div>
+    </form>
+  </dialog>
+  <dialog id="settings-dialog" class="settings-dialog">
+    <form id="settings-form">
+      <div class="dialog-head"><div><p>本机设置与隐私</p><h2>设置中心</h2></div><button type="button" class="icon-btn" id="close-settings" aria-label="关闭设置">×</button></div>
+      <div class="settings-layout">
+        <nav class="settings-nav" aria-label="设置分类">
+          <button type="button" data-settings-tab="focus" class="active">专注</button>
+          <button type="button" data-settings-tab="ai">AI</button>
+          <button type="button" data-settings-tab="appearance">外观</button>
+          <button type="button" data-settings-tab="data">数据与备份</button>
+        </nav>
+        <div class="settings-pages">
+          <section data-settings-page="focus">
+            <h3>专注体验</h3><p class="settings-lead">控制提示、休息衔接与通知；时长仍由“今日时间规划”统一管理。</p>
+            <label class="switch-row"><span><b>提示音</b><small>一分钟提醒与阶段结束提示</small></span><input type="checkbox" id="setting-sound"></label>
+            <label class="switch-row"><span><b>系统通知</b><small>仅在你主动开启时请求浏览器权限</small></span><input type="checkbox" id="setting-notification"></label>
+            <label class="switch-row"><span><b>专注后自动休息</b><small>休息结束后仍等待你确认</small></span><input type="checkbox" id="setting-auto-break"></label>
+            <label class="field"><span>提示音音量</span><input type="range" id="setting-volume" min="0" max="100"><output id="setting-volume-output"></output></label>
+            <button type="button" class="secondary-btn" id="open-planning-settings">调整工作与休息时长</button>
+          </section>
+          <section data-settings-page="ai" class="hidden">
+            <h3>DeepSeek AI</h3><p class="settings-lead" id="ai-settings-status">正在读取安全凭据状态…</p>
+            <label class="field"><span>API Key</span><div class="secret-field"><input type="password" id="ai-api-key" autocomplete="new-password" placeholder="sk-…"><button type="button" id="toggle-ai-key">显示</button></div><small>保存到 Windows 凭据管理器；不会写入数据库、日志或备份。</small></label>
+            <div class="form-grid three"><label class="field"><span>Provider</span><input value="DeepSeek" readonly></label><label class="field"><span>Base URL</span><input type="url" id="ai-base-url"></label><label class="field"><span>模型</span><input id="ai-model"></label></div>
+            <label class="field"><span>超时（秒）</span><input type="number" id="ai-timeout" min="3" max="120"></label>
+            <div class="settings-actions"><button type="button" class="danger-btn" id="delete-ai-key">删除 Key</button><span></span><button type="button" class="secondary-btn" id="test-ai-key">测试连接</button><button type="button" class="primary-btn" id="save-ai-settings">保存 AI 设置</button></div>
+          </section>
+          <section data-settings-page="appearance" class="hidden">
+            <h3>外观</h3><p class="settings-lead">主题、背景与文字对比度由独立外观面板管理。</p>
+            <button type="button" class="primary-btn" id="appearance-btn">打开外观设置</button>
+          </section>
+          <section data-settings-page="data" class="hidden">
+            <h3>数据与备份</h3><p class="settings-lead">导出 JSON 备份，不包含 API Key 或活动中的计时。</p>
+            <div class="data-actions"><button type="button" class="secondary-btn" id="export-btn">导出 JSON 备份</button><label class="secondary-btn file-btn">导入 JSON 备份<input type="file" id="import-file" accept="application/json"></label></div>
+          </section>
+        </div>
+      </div>
+      <div class="dialog-actions"><span></span><button type="button" class="secondary-btn" id="cancel-settings">关闭</button><button type="submit" class="primary-btn" id="save-preferences">保存专注偏好</button></div>
     </form>
   </dialog>
   <dialog id="schedule-dialog">
@@ -150,6 +191,6 @@
   <section id="focus-panel" class="focus-panel hidden" aria-label="专注计时器"></section>
   <div id="context-menu" class="context-menu hidden" role="menu" aria-label="快捷操作"></div>
   <div class="toast" id="toast" role="status"><span id="toast-text"></span><button id="toast-action" class="hidden"></button></div>
-  <script src="app.js?v=20260820.2"></script>
+  <script src="app.js?v=20260820.3"></script>
 </body>
 </html>

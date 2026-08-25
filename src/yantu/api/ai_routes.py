@@ -17,7 +17,7 @@ def create_ai_blueprint(db_path: Path | str, service_factory: ServiceFactory | N
     blueprint = Blueprint("ai", __name__, url_prefix="/api/ai")
 
     def service() -> TaskBreakdownService:
-        llm = service_factory() if service_factory else LLMService.from_environment()
+        llm = service_factory() if service_factory else LLMService.from_settings(db_path)
         return TaskBreakdownService(db_path, llm)
 
     @blueprint.get("/status")
@@ -51,4 +51,3 @@ def create_ai_blueprint(db_path: Path | str, service_factory: ServiceFactory | N
             return jsonify({"error": str(exc)}), 400
 
     return blueprint
-

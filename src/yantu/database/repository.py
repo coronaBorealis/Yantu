@@ -11,7 +11,7 @@ from ..common import utc_now
 from .config import DEFAULT_DB_PATH
 from .constants import DOMAINS, PRIORITIES, STATUSES
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _column_names(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -248,6 +248,43 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                 ON plan_blocks(block_date, start_time);
             CREATE INDEX IF NOT EXISTS idx_plan_blocks_run
                 ON plan_blocks(run_id, sequence);
+
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS focus_sessions (
+                id TEXT PRIMARY KEY,
+                task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+                plan_block_id TEXT REFERENCES plan_blocks(id) ON DELETE SET NULL,
+                parent_session_id TEXT REFERENCES focus_sessions(id) ON DELETE SET NULL,
+                session_type TEXT NOT NULL
+                    CHECK(session_type IN ('focus','short_break','long_break')),
+                mode TEXT NOT NULL CHECK(mode IN ('pomodoro','free')),
+                status TEXT NOT NULL
+                    CHECK(status IN ('running','paused','awaiting_action','completed','cancelled')),
+                target_seconds INTEGER NOT NULL DEFAULT 0 CHECK(target_seconds >= 0),
+                elapsed_seconds INTEGER NOT NULL DEFAULT 0 CHECK(elapsed_seconds >= 0),
+                paused_seconds INTEGER NOT NULL DEFAULT 0 CHECK(paused_seconds >= 0),
+                pause_count INTEGER NOT NULL DEFAULT 0 CHECK(pause_count >= 0),
+                started_at TEXT NOT NULL,
+                last_resumed_at TEXT,
+                ended_at TEXT,
+                time_entry_id TEXT REFERENCES time_entries(id) ON DELETE SET NULL,
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_focus_sessions_task_started
+                ON focus_sessions(task_id, started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_focus_sessions_status
+                ON focus_sessions(status, started_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_focus_one_active
+                ON focus_sessions ((1))
+                WHERE status IN ('running','paused','awaiting_action');
             """
         )
         now = utc_now()

@@ -75,7 +75,7 @@ def test_legacy_database_is_migrated_without_data_loss(tmp_path: Path):
     finally:
         connection.close()
 
-    assert version == 4
+    assert version == 5
     assert task_count == 1
     assert project["id"] == "legacy-project"
     assert project["category"] == "科研"

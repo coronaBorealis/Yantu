@@ -1,6 +1,7 @@
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$runtimeFile = Join-Path $projectRoot "data\runtime.json"
+$dataRoot = if ($env:YANTU_DATA_DIR) { [System.IO.Path]::GetFullPath($env:YANTU_DATA_DIR) } else { Join-Path $projectRoot "data" }
+$runtimeFile = Join-Path $dataRoot "runtime.json"
 
 if (-not (Test-Path -LiteralPath $runtimeFile)) {
     Write-Host "Yantu is not running (no runtime file was found)."

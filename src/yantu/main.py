@@ -30,15 +30,19 @@ from .api.appearance_routes import create_appearance_blueprint
 from .api.schedule_routes import create_schedule_blueprint
 from .api.time_routes import create_time_blueprint
 from .api.planning_routes import create_planning_blueprint
-from .database.config import DEFAULT_DB_PATH
+from .api.focus_routes import create_focus_blueprint
+from .api.settings_routes import create_settings_blueprint
+from .database.config import APP_PATHS, DEFAULT_DB_PATH
 from .database.constants import DOMAINS, PRIORITIES, STATUSES
 from .services.task_service import TaskService
 from .services.schedule_service import ScheduleService
 from .services.appearance_service import AppearanceService
 from .services.planning_service import PlanningService
+from .services.focus_service import FocusService
+from .services.settings_service import SettingsService
 
 
-RUNTIME_FILE = REPOSITORY_ROOT / "data" / "runtime.json"
+RUNTIME_FILE = APP_PATHS.runtime_file
 ASSET_FILES = {"styles.css", "theme.css", "app.js"}
 BRAND_ASSETS = {
     "logo-master.png", "logo-512.png", "logo-192.png", "logo-64.png",
@@ -183,21 +187,39 @@ def create_app(
     schedule_service = ScheduleService(db_path)
     appearance_service = AppearanceService(appearance_config, appearance_directory)
     planning_service = PlanningService(db_path)
+    settings_service = SettingsService(db_path)
+    focus_service = FocusService(db_path, settings=settings_service)
     app.config.update(
         DB_PATH=str(db_path),
         JSON_AS_ASCII=False,
         SHUTDOWN_TOKEN=None,
         SERVER_SHUTDOWN=None,
         INSTANCE_ID=None,
+        REQUEST_TOKEN=None,
         MAX_CONTENT_LENGTH=10 * 1024 * 1024 + 64 * 1024,
     )
     app.register_blueprint(create_ai_blueprint(db_path, llm_service_factory))
     app.register_blueprint(create_schedule_blueprint(db_path, schedule_ocr_engine))
     app.register_blueprint(create_time_blueprint(db_path))
     app.register_blueprint(create_planning_blueprint(db_path))
+    app.register_blueprint(create_focus_blueprint(db_path, focus_service))
+    app.register_blueprint(create_settings_blueprint(db_path, settings_service))
     app.register_blueprint(
         create_appearance_blueprint(appearance_config, appearance_directory)
     )
+
+    @app.before_request
+    def protect_local_mutations():
+        expected = app.config.get("REQUEST_TOKEN")
+        if (
+            expected
+            and request.path.startswith("/api/")
+            and request.path != "/api/shutdown"
+            and request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        ):
+            supplied = request.headers.get("X-Yantu-Token", "")
+            if not supplied or not secrets.compare_digest(str(expected), supplied):
+                return jsonify({"error": "请求令牌无效，请刷新 Yantu 后重试"}), 403
 
     @app.after_request
     def prevent_stale_local_assets(response):
@@ -211,7 +233,9 @@ def create_app(
 
     @app.get("/")
     def index():
-        return send_from_directory(WEB_ROOT, "index.html")
+        html = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
+        html = html.replace("__YANTU_REQUEST_TOKEN__", str(app.config.get("REQUEST_TOKEN") or ""))
+        return app.response_class(html, mimetype="text/html")
 
     @app.get("/favicon.ico")
     def favicon():
@@ -359,7 +383,7 @@ def create_app(
     def export_data():
         return jsonify(
             {
-                "version": 4,
+                "version": 5,
                 "exported_at": utc_now(),
                 "tasks": task_service.list_records(),
                 "deleted_tasks": task_service.list_deleted_records(),
@@ -373,6 +397,8 @@ def create_app(
                 ],
                 "appearance": appearance_service.export_backup(),
                 "planning": planning_service.export_backup(),
+                "focus_sessions": focus_service.export_backup(),
+                "settings": settings_service.export_backup(),
             }
         )
 
@@ -471,6 +497,8 @@ def create_app(
         planning_result = {"planning_runs_imported": 0}
         if isinstance(payload.get("planning"), dict):
             planning_result = planning_service.import_backup(payload["planning"])
+        settings_service.import_backup(payload.get("settings"))
+        focus_sessions_imported = focus_service.import_backup(payload.get("focus_sessions"))
         return jsonify({
             "imported": imported,
             "deleted_imported": deleted_imported,
@@ -478,6 +506,7 @@ def create_app(
             "courses_imported": course_imported,
             "appearance_imported": appearance_imported,
             **planning_result,
+            "focus_sessions_imported": focus_sessions_imported,
         })
 
     @app.errorhandler(ValidationError)
@@ -523,9 +552,9 @@ def bind_server(
         raise RuntimeError(f"No local port could be bound.{os.linesep}{details}") from error
 
 
-def write_runtime(url: str, port: int, db_path: Path, shutdown_token: str, instance_id: str) -> None:
-    RUNTIME_FILE.parent.mkdir(parents=True, exist_ok=True)
-    RUNTIME_FILE.write_text(
+def write_runtime(url: str, port: int, db_path: Path, shutdown_token: str, instance_id: str, runtime_file: Path = RUNTIME_FILE) -> None:
+    runtime_file.parent.mkdir(parents=True, exist_ok=True)
+    runtime_file.write_text(
         json.dumps(
             {
                 "pid": os.getpid(),
@@ -574,9 +603,11 @@ def main() -> int:
         return 2
 
     db_path = args.db.resolve()
+    runtime_file = db_path.parent / "runtime.json"
     app = create_app(db_path)
     instance_id = str(uuid.uuid4())
     app.config["INSTANCE_ID"] = instance_id
+    app.config["REQUEST_TOKEN"] = secrets.token_urlsafe(32)
     try:
         server, port, bind_errors = bind_server(app, args.host, args.port)
     except RuntimeError as error:
@@ -587,7 +618,7 @@ def main() -> int:
     shutdown_token = secrets.token_urlsafe(32)
     app.config["SHUTDOWN_TOKEN"] = shutdown_token
     app.config["SERVER_SHUTDOWN"] = server.shutdown
-    write_runtime(url, port, db_path, shutdown_token, instance_id)
+    write_runtime(url, port, db_path, shutdown_token, instance_id, runtime_file)
     print(f"Python interpreter: {sys.executable}", flush=True)
     print(f"SQLite database: {db_path}", flush=True)
     if bind_errors:
@@ -609,9 +640,9 @@ def main() -> int:
     finally:
         server.server_close()
         try:
-            runtime = json.loads(RUNTIME_FILE.read_text(encoding="utf-8"))
+            runtime = json.loads(runtime_file.read_text(encoding="utf-8"))
             if runtime.get("pid") == os.getpid():
-                RUNTIME_FILE.unlink(missing_ok=True)
+                runtime_file.unlink(missing_ok=True)
         except (OSError, json.JSONDecodeError):
             pass
     return 0

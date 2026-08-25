@@ -127,6 +127,23 @@ class LLMService:
             )
         )
 
+    @classmethod
+    def from_settings(cls, db_path: Path | str) -> "LLMService":
+        from ..services.settings_service import SettingsService
+
+        try:
+            config = SettingsService(db_path).resolved_ai()
+        except ValueError as exc:
+            raise LLMConfigurationError(str(exc)) from exc
+        return cls(
+            DeepSeekProvider(
+                api_key=str(config["api_key"]),
+                base_url=str(config["base_url"]),
+                model=str(config["model"]),
+                timeout=float(config["timeout"]),
+            )
+        )
+
     def generate(self, prompt: str) -> LLMResponse:
         if not isinstance(prompt, str) or not prompt.strip():
             raise LLMResponseError("提示词不能为空")
@@ -147,4 +164,3 @@ class LLMService:
             "model": self.provider.model,
             "configured": bool(getattr(self.provider, "configured", True)),
         }
-

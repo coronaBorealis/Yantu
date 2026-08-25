@@ -32,7 +32,7 @@ def test_v4_migration_is_idempotent_and_preserves_tasks(tmp_path: Path) -> None:
     with sqlite3.connect(db_path) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
         assert {"planning_profiles", "planning_runs", "plan_blocks"} <= tables
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
         assert connection.execute("SELECT title FROM tasks WHERE id='kept'").fetchone()[0] == "kept"
         assert connection.execute("SELECT COUNT(*) FROM planning_profiles").fetchone()[0] == 1
 
@@ -105,7 +105,7 @@ def test_preview_confirm_and_api_profile_round_trip(tmp_path: Path) -> None:
     assert listed and listed[0]["run_id"] == plan["id"]
 
     backup = client.get("/api/export").get_json()
-    assert backup["version"] == 4
+    assert backup["version"] == 5
     assert backup["planning"]["runs"][0]["blocks"]
     restored_client = create_app(tmp_path / "restored.db").test_client()
     restored = restored_client.post("/api/import", json=backup)

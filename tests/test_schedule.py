@@ -42,7 +42,7 @@ def test_v3_migration_is_idempotent_and_preserves_tasks(tmp_path: Path):
     init_db(db_path)
     connection = sqlite3.connect(db_path)
     try:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
         assert connection.execute("SELECT title FROM tasks WHERE id='old'").fetchone()[0] == "旧任务"
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
         assert {"semesters", "courses", "course_meetings", "course_exceptions", "schedule_imports"} <= tables

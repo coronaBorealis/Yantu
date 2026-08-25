@@ -135,7 +135,7 @@ class YantuApiTests(unittest.TestCase):
     def test_backup_export_and_import(self):
         self.client.post("/api/tasks", json={"title": "课程项目", "domain": "course"})
         backup = self.client.get("/api/export").get_json()
-        self.assertEqual(backup["version"], 4)
+        self.assertEqual(backup["version"], 5)
         self.assertEqual(len(backup["tasks"]), 1)
 
         other_db = Path(self.temp_dir.name) / "restored.db"

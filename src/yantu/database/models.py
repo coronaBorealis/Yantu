@@ -171,3 +171,62 @@ class CourseMeeting:
     end_week: int
     week_pattern: str
     custom_weeks: list[int]
+
+
+class FocusSessionType(str, Enum):
+    FOCUS = "focus"
+    SHORT_BREAK = "short_break"
+    LONG_BREAK = "long_break"
+
+
+class FocusMode(str, Enum):
+    POMODORO = "pomodoro"
+    FREE = "free"
+
+
+class FocusStatus(str, Enum):
+    RUNNING = "running"
+    PAUSED = "paused"
+    AWAITING_ACTION = "awaiting_action"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True)
+class FocusSession:
+    id: str
+    task_id: str | None
+    plan_block_id: str | None
+    parent_session_id: str | None
+    session_type: FocusSessionType
+    mode: FocusMode
+    status: FocusStatus
+    target_seconds: int
+    elapsed_seconds: int
+    paused_seconds: int
+    pause_count: int
+    started_at: str
+    last_resumed_at: str | None
+    ended_at: str | None
+    time_entry_id: str | None
+    note: str
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def from_record(cls, record: Mapping[str, Any]) -> "FocusSession":
+        nullable = lambda key: str(record[key]) if record.get(key) else None
+        return cls(
+            id=str(record["id"]), task_id=nullable("task_id"),
+            plan_block_id=nullable("plan_block_id"), parent_session_id=nullable("parent_session_id"),
+            session_type=FocusSessionType(str(record["session_type"])),
+            mode=FocusMode(str(record["mode"])), status=FocusStatus(str(record["status"])),
+            target_seconds=int(record.get("target_seconds") or 0),
+            elapsed_seconds=int(record.get("elapsed_seconds") or 0),
+            paused_seconds=int(record.get("paused_seconds") or 0),
+            pause_count=int(record.get("pause_count") or 0),
+            started_at=str(record["started_at"]), last_resumed_at=nullable("last_resumed_at"),
+            ended_at=nullable("ended_at"), time_entry_id=nullable("time_entry_id"),
+            note=str(record.get("note") or ""), created_at=str(record["created_at"]),
+            updated_at=str(record["updated_at"]),
+        )

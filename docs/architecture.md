@@ -2,11 +2,12 @@
 
 ## 目标与边界
 
-Yantu 是 local-first 的单用户 Web 应用：Flask 提供本地 API 与静态资源，SQLite 负责持久化，浏览器负责交互。当前不引入 Node.js、Docker、云数据库或账号系统。
+Yantu 是 local-first 的单用户桌面应用：pywebview 提供 Windows 窗口，Flask 在进程内提供本地 API 与静态资源，SQLite 负责持久化。源码模式仍可使用浏览器交互。当前不引入 Node.js、Docker、云数据库或账号系统。
 
 ```mermaid
 flowchart LR
-    UI["浏览器 UI"] --> API["Flask API"]
+    SHELL["pywebview 桌面壳 / 浏览器"] --> UI["原生 Web UI"]
+    UI --> API["Flask API"]
     API --> TASK["任务业务服务"]
     TASK --> DB["SQLite Repository"]
     API --> BREAKDOWN["TaskBreakdownService"]
@@ -23,6 +24,14 @@ flowchart LR
     APPEARANCE_API --> APPEARANCE_SERVICE["AppearanceService"]
     APPEARANCE_SERVICE --> APPEARANCE_REPO["AppearanceRepository"]
     APPEARANCE_REPO --> FILES["appearance.json / 本地背景"]
+    UI --> FOCUS_API["Focus API"]
+    FOCUS_API --> FOCUS_SERVICE["FocusService"]
+    FOCUS_SERVICE --> FOCUS_REPO["FocusRepository"]
+    FOCUS_REPO --> DB
+    UI --> SETTINGS_API["Settings API"]
+    SETTINGS_API --> SETTINGS_SERVICE["SettingsService"]
+    SETTINGS_SERVICE --> SETTINGS_REPO["SettingsRepository"]
+    SETTINGS_SERVICE --> VAULT["Windows Credential Manager"]
 ```
 
 依赖方向固定为 `API -> Service -> Interface/Repository`。任务业务代码不导入任何具体模型 SDK，也不处理 API Key。
@@ -60,7 +69,7 @@ sequenceDiagram
 
 Task 和 Course 使用 `deleted_at` 软删除。常规查询统一排除回收站条目；恢复会清空该字段，只有回收站中的条目才能永久删除。前端右键菜单和移动端“⋯”菜单调用相同 API，并通过短时撤销降低误删风险。
 
-备份格式版本为 `4`，包含课程、学期、课程例外、回收站任务、规划偏好和已确认规划批次，同时继续接受旧版仅包含 `tasks` 的备份。
+备份格式版本为 `5`，包含课程、学期、课程例外、回收站任务、规划偏好、已确认规划批次、已结束专注历史和允许备份的非秘密设置，同时继续接受旧版仅包含 `tasks` 的备份。API Key、活动会话和本机请求令牌永不导出。
 
 ## 每日容量与专注计时
 
@@ -73,30 +82,30 @@ today = ceil(remaining / inclusive_days(today, deadline))
 
 未来开始的任务和没有开始日期的未来 Deadline 不会提前占用今天容量；Deadline 当天承接全部剩余量。接口 `GET /api/planning/daily?date=YYYY-MM-DD` 返回任务级分配及总分钟数，前端只负责呈现。
 
-番茄钟不建立独立数据库模型。浏览器保存运行中的短期计时状态，完成后通过 TimeEntry 用例落库：
+专注计时以 `focus_sessions` 保存可恢复的生命周期，TimeEntry 仍是任务实际投入的唯一账本：
 
 ```mermaid
 sequenceDiagram
     actor User as 用户
-    participant Timer as 浏览器专注计时器
-    participant API as TimeEntry API
-    participant Service as TimeEntryService
+    participant Timer as 专注工作台
+    participant API as Focus API
+    participant Service as FocusService
     participant Repo as Repository
     participant DB as SQLite
     User->>Timer: 启动 25/5、50/10 或自由专注
-    Timer->>Timer: 暂停、恢复、刷新后续计
-    Timer->>API: 完成并记录 duration
-    API->>Service: 校验任务与时间范围
-    Service->>Repo: 保存 TimeEntry
-    Service->>Repo: 同步 Task.actual_minutes
-    Repo->>DB: 持久化
+    Timer->>API: 启动 / 暂停 / 恢复
+    Service->>Repo: 持久化 FocusSession 时间戳
+    Timer->>API: 到时后人工确认
+    API->>Service: 校验状态机与幂等性
+    Service->>Repo: 同事务完成会话并创建 TimeEntry
+    Repo->>DB: 同步 Task.actual_minutes 与 PlanBlock
 ```
 
-接口包括 `GET/POST /api/time-entries` 与 `PATCH/DELETE /api/time-entries/{id}`。编辑或删除记录时，任务实际耗时按差值同步修正，防止计时记录和任务统计逐渐偏离。
+`focus_sessions` 同一时间只允许一个 `running / paused / awaiting_action` 会话。Service 依据 `elapsed_seconds + last_resumed_at` 恢复重启后的有效经过时间，倒计时超时只进入 `awaiting_action`；重复完成不会重复创建 TimeEntry。休息会话不计入任务工时。接口包括 `/api/focus/active`、会话状态变更、历史和统计；原有 TimeEntry CRUD 保持兼容。
 
 ### 多任务规划数据合同
 
-规划层使用三个持久化实体，数据库 `user_version = 4`：
+规划层使用三个持久化实体，数据库 `user_version = 5`：
 
 | 实体 | 职责 |
 | --- | --- |
@@ -179,8 +188,20 @@ sequenceDiagram
 
 ## 数据与安全
 
-- 默认数据库：`data/yantu.db`
-- 本地秘密：`.env`
-- 运行状态：`data/runtime.json`
+- `AppPaths` 是运行路径的唯一解析入口：显式 `YANTU_DATA_DIR` 优先；冻结安装版使用 `%LOCALAPPDATA%\Yantu`；源码开发使用仓库 `data/`。
+- 只读资源（Python 包、HTML/CSS/JS、Logo）与可写数据（SQLite、外观、日志、运行状态）分离，业务代码不再自行推导仓库根目录。
+- DeepSeek API Key 默认通过 `keyring` 保存到 Windows Credential Manager，服务名 `Yantu`、账户名 `deepseek:default`；`DEEPSEEK_API_KEY` 环境变量优先。
+- `app_settings` 只保存非秘密 JSON 设置，包括专注偏好及未来新手引导标记。
+- 服务每次启动生成随机请求令牌并注入首屏；所有本地修改型 `/api/*` 请求必须携带匹配的 `X-Yantu-Token`。
+- 默认数据库（源码开发）：`data/yantu.db`
+- 运行状态（源码开发）：`data/runtime.json`
 - 服务地址：仅 `127.0.0.1`
 - AI 预览不会自动写入；确认数据会再次经过 Schema 校验，并在一个 SQLite 事务中保存。
+
+## Windows 桌面与发布边界
+
+- `desktop.py` 在同一进程中把 Flask WSGI 应用交给 pywebview，不开放新的公网服务，也不改变 API → Service → Repository 依赖方向。
+- Windows 命名 Mutex 保证同一用户只运行一个 Yantu 桌面实例，并与 Inno Setup 的升级前关闭检测共用同一标识。
+- PyInstaller 使用 `onedir`，避免 onefile 临时解压目录被误当作可写数据目录；Inno Setup 仅为当前用户安装到 `%LOCALAPPDATA%\Programs\Yantu`，无需管理员权限。
+- 安装版的持久数据始终位于 `%LOCALAPPDATA%\Yantu`。覆盖升级或卸载只处理程序资源，不删除任务数据库、背景或 WebView 状态。
+- 构建脚本依次执行冻结程序自检、安装器编译、静默安装、已安装程序自检和静默卸载，并生成 SHA-256；标签发布工作流只在测试与上述检查全部通过后上传 Release 资产。
