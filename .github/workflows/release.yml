@@ -49,8 +49,13 @@ jobs:
             throw "No installer assets were found."
           }
           gh release view $env:GITHUB_REF_NAME 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create $env:GITHUB_REF_NAME @assets --title "Yantu $env:GITHUB_REF_NAME" --generate-notes
-          } else {
-            gh release upload $env:GITHUB_REF_NAME @assets --clobber
+          if ($LASTEXITCODE -eq 0) {
+            $assetCount = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:GITHUB_REF_NAME" --jq ".assets | length"
+            if ([int]$assetCount -eq 0) {
+              gh release delete $env:GITHUB_REF_NAME --yes
+            } else {
+              gh release upload $env:GITHUB_REF_NAME @assets --clobber
+              exit 0
+            }
           }
+          gh release create $env:GITHUB_REF_NAME @assets --title "Yantu $env:GITHUB_REF_NAME" --generate-notes --latest
