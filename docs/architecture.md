@@ -204,4 +204,4 @@ sequenceDiagram
 - Windows 命名 Mutex 保证同一用户只运行一个 Yantu 桌面实例，并与 Inno Setup 的升级前关闭检测共用同一标识。
 - PyInstaller 使用 `onedir`，避免 onefile 临时解压目录被误当作可写数据目录；Inno Setup 仅为当前用户安装到 `%LOCALAPPDATA%\Programs\Yantu`，无需管理员权限。
 - 安装版的持久数据始终位于 `%LOCALAPPDATA%\Yantu`。覆盖升级或卸载只处理程序资源，不删除任务数据库、背景或 WebView 状态。
-- 构建脚本依次执行冻结程序自检、安装器编译、静默安装、已安装程序自检和静默卸载，并生成 SHA-256；标签发布工作流只在测试与上述检查全部通过后上传 Release 资产。
+- 构建脚本依次执行冻结程序自检、安装器编译、静默安装、已安装程序自检和静默卸载，并生成 SHA-256；标签工作流只在测试与上述检查全部通过后保存 Actions Artifact，面向普通用户的稳定安装器和校验文件同步在仓库 `downloads/`。

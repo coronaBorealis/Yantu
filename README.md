@@ -35,15 +35,15 @@ Yantu 以 Windows 桌面窗口提供交互，内部继续复用 Flask 本地应�
 
 ### Windows 安装版（推荐）
 
-1. 打开 [GitHub Releases](https://github.com/coronaBorealis/Yantu/releases/latest)。
-2. 下载 `Yantu-Setup-0.2.1-x64.exe`，双击并按向导安装。
+1. [直接下载 Yantu 0.2.1 Windows 安装包](https://github.com/coronaBorealis/Yantu/raw/main/downloads/Yantu-Setup-0.2.1-x64.exe)。
+2. 双击 `Yantu-Setup-0.2.1-x64.exe`，按向导安装。
 3. 从桌面或开始菜单打开 **Yantu 研途**。
 
 安装版支持 64 位 Windows 10/11，按当前用户安装，不要求管理员权限。卸载应用不会删除 `%LOCALAPPDATA%\Yantu` 中的任务、课表和设置；建议仍定期从设置中心导出 JSON 备份。
 
 桌面窗口使用系统的 Microsoft Edge WebView2 Runtime。Windows 10/11 通常已包含该组件；若启动时提示缺失，请从 [Microsoft WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) 安装 Evergreen Runtime。
 
-> 安装包及其 `.sha256` 校验文件均由 GitHub Release 工作流生成。Windows 可能对尚未进行商业代码签名的新应用显示 SmartScreen 提示，请仅从本仓库 Release 页面下载并核对版本与校验值。
+> 安装包由 Windows 构建工作流生成，并随仓库保存对应的 [SHA-256 校验文件](https://github.com/coronaBorealis/Yantu/raw/main/downloads/Yantu-Setup-0.2.1-x64.exe.sha256)。Windows 可能对尚未进行商业代码签名的新应用显示 SmartScreen 提示，请只从本仓库下载并核对校验值。
 
 ### 从源码运行
 
@@ -272,7 +272,7 @@ pip install -r requirements-build.txt
 .\scripts\build-installer.ps1
 ```
 
-脚本会生成 PyInstaller onedir 桌面程序，执行冻结版自检，编译中英双语 Inno Setup 安装器，再完成一次静默安装、启动自检和卸载。产物位于 `dist/installer/`，并附带 SHA-256 文件。推送 `v*` 标签时，GitHub Actions 会重复执行测试与构建并把产物发布到对应 Release。
+脚本会生成 PyInstaller onedir 桌面程序，执行冻结版自检，编译中英双语 Inno Setup 安装器，再完成一次静默安装、启动自检和卸载。产物位于 `dist/installer/`，并附带 SHA-256 文件。推送 `v*` 标签时，GitHub Actions 会重复执行测试与构建，并保留可下载的工作流 Artifact；面向普通用户的已验证安装器同步在 `downloads/`。
 
 ## 数据与安全
 
