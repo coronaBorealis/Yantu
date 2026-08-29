@@ -33,7 +33,8 @@
         <button class="nav-item" data-view="week"><span>▦</span>未来 7 天</button>
         <button class="nav-item" data-view="month"><span>□</span>月历</button>
         <button class="nav-item" data-view="schedule"><span>▤</span>课表</button>
-        <button class="nav-item" data-view="ai"><span>◇</span>AI 任务拆解</button>
+          <button class="nav-item" data-view="ai"><span>◇</span>AI 任务拆解</button>
+          <button class="nav-item" data-view="research_library"><span>⌘</span>科研文献</button>
         <button class="nav-item" data-view="trash"><span>♲</span>回收站</button>
       </nav>
       <div class="sidebar-bottom">
@@ -96,6 +97,7 @@
         <nav class="settings-nav" aria-label="设置分类">
           <button type="button" data-settings-tab="focus" class="active">专注</button>
           <button type="button" data-settings-tab="ai">AI</button>
+          <button type="button" data-settings-tab="zotero">Zotero</button>
           <button type="button" data-settings-tab="appearance">外观</button>
           <button type="button" data-settings-tab="data">数据与备份</button>
         </nav>
@@ -119,6 +121,15 @@
             <h3>外观</h3><p class="settings-lead">主题、背景与文字对比度由独立外观面板管理。</p>
             <button type="button" class="primary-btn" id="appearance-btn">打开外观设置</button>
           </section>
+          <section data-settings-page="zotero" class="hidden">
+            <h3>Zotero 连接</h3><p class="settings-lead" id="zotero-settings-status">优先读取本机 Zotero；只有使用 Web API 时才需要 Key。</p>
+            <input type="hidden" id="zotero-source-id">
+            <div class="form-grid"><label class="field"><span>连接方式</span><select id="zotero-access-mode"><option value="local">本机 Zotero（推荐）</option><option value="web">Zotero Web API</option></select></label><label class="field"><span>连接名称</span><input id="zotero-display-name" maxlength="120" value="我的 Zotero"></label></div>
+            <div class="form-grid"><label class="field"><span>文库类型</span><select id="zotero-library-type"><option value="user">个人文库</option><option value="group">群组文库</option></select></label><label class="field"><span>数字文库 ID</span><input id="zotero-library-id" inputmode="numeric" placeholder="本机个人文库可留空"></label></div>
+            <label class="field"><span>API 地址</span><input type="url" id="zotero-base-url"><small>本机仅允许 localhost；Web 模式固定使用 api.zotero.org。</small></label>
+            <label class="field" id="zotero-key-field"><span>Web API Key</span><div class="secret-field"><input type="password" id="zotero-api-key" autocomplete="new-password"><button type="button" id="toggle-zotero-key">显示</button></div><small>仅保存到 Windows 凭据管理器，不进入数据库或备份。</small></label>
+            <div class="settings-actions"><button type="button" class="danger-btn" id="delete-zotero-key">删除 Key</button><span></span><button type="button" class="secondary-btn" id="test-zotero">测试连接</button><button type="button" class="secondary-btn" id="sync-zotero">立即同步</button><button type="button" class="primary-btn" id="save-zotero">保存连接</button></div>
+          </section>
           <section data-settings-page="data" class="hidden">
             <h3>数据与备份</h3><p class="settings-lead">导出 JSON 备份，不包含 API Key 或活动中的计时。</p>
             <div class="data-actions"><button type="button" class="secondary-btn" id="export-btn">导出 JSON 备份</button><label class="secondary-btn file-btn">导入 JSON 备份<input type="file" id="import-file" accept="application/json"></label></div>
@@ -126,6 +137,34 @@
         </div>
       </div>
       <div class="dialog-actions"><span></span><button type="button" class="secondary-btn" id="cancel-settings">关闭</button><button type="submit" class="primary-btn" id="save-preferences">保存专注偏好</button></div>
+    </form>
+  </dialog>
+  <dialog id="research-task-dialog">
+    <form id="research-task-form">
+      <div class="dialog-head"><div><p>确认后才创建任务</p><h2>论文转为阅读任务</h2></div><button type="button" class="icon-btn" id="close-research-task" aria-label="关闭">×</button></div>
+      <input type="hidden" id="research-item-id">
+      <label class="field"><span>任务名称</span><input id="research-task-title" maxlength="160" required></label>
+      <div class="form-grid three"><label class="field"><span>预计分钟</span><input type="number" id="research-task-minutes" min="5" max="10080" required></label><label class="field"><span>截止日期</span><input type="date" id="research-task-due"></label><label class="field"><span>优先级</span><select id="research-task-priority"><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="urgent">紧急</option></select></label></div>
+      <label class="field"><span>规划方式</span><select id="research-task-status"><option value="not_started">先放入科研任务</option><option value="waiting">立即交给自动规划</option></select><small>选择自动规划时，建议同时填写 Deadline。</small></label>
+      <label class="field"><span>说明</span><textarea id="research-task-description" rows="3"></textarea></label>
+      <div class="dialog-actions"><span></span><button type="button" class="secondary-btn" id="cancel-research-task">取消</button><button type="submit" class="primary-btn">确认创建</button></div>
+    </form>
+  </dialog>
+  <dialog id="research-import-dialog" class="research-import-dialog">
+    <form id="research-import-form">
+      <div class="dialog-head"><div><p>预览后再写入项目</p><h2>从 Zotero 导入论文</h2></div><button type="button" class="icon-btn" id="close-research-import" aria-label="关闭">×</button></div>
+      <div class="form-grid">
+        <label class="field"><span>科研项目 *</span><select id="research-import-project" required></select></label>
+        <label class="field"><span>Zotero 来源 *</span><select id="research-import-source" required></select></label>
+      </div>
+      <div class="form-grid">
+        <label class="field"><span>导入方式</span><select id="research-import-mode"><option value="collection">按文件夹导入</option><option value="search">检索导入</option></select></label>
+        <label class="field" id="research-collection-field"><span>Zotero 文件夹</span><select id="research-import-collection"></select></label>
+        <label class="field hidden" id="research-search-field"><span>标题、作者或年份</span><input id="research-import-query" maxlength="200" placeholder="例如：single photon lidar"></label>
+      </div>
+      <label class="switch-row" id="research-subcollections-row"><span><b>包含子文件夹</b><small>自动合并子文件夹中的论文并去重</small></span><input type="checkbox" id="research-include-subcollections" checked></label>
+      <div id="research-import-preview" class="research-import-preview"><div class="empty"><strong>选择范围后开始预览</strong>预览不会写入 Yantu，也不会修改 Zotero。</div></div>
+      <div class="dialog-actions"><button type="button" class="secondary-btn" id="cancel-research-import">取消</button><span></span><button type="button" class="secondary-btn" id="preview-research-import">读取预览</button><button type="submit" class="primary-btn" id="confirm-research-import" disabled>导入所选论文</button></div>
     </form>
   </dialog>
   <dialog id="schedule-dialog">

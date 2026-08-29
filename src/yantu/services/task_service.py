@@ -2,20 +2,25 @@ from __future__ import annotations
 
 import uuid
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping
 
 from ..common import utc_now
 from ..database.constants import DOMAINS
 from ..database.models import Task, TaskPriority, TaskStatus
-from ..database.repositories import ProjectRepository, TaskRepository
+from ..database.repositories import (
+    ProjectRepository,
+    TaskPlanningPreferenceRepository,
+    TaskRepository,
+)
 
 
 class TaskService:
     def __init__(self, db_path: Path | str) -> None:
         self.repository = TaskRepository(db_path)
         self.projects = ProjectRepository(db_path)
+        self.planning_preferences = TaskPlanningPreferenceRepository(db_path)
 
     def list(
         self,
@@ -62,10 +67,14 @@ class TaskService:
     def count(self) -> int:
         return self.repository.count()
 
-    def daily_plan(self, on_date: str) -> dict[str, Any]:
-        """Allocate remaining estimates across the remaining active calendar days."""
+    def daily_plan(self, on_date: str, *, now: datetime | None = None) -> dict[str, Any]:
+        """Return a time-sensitive projection; derived values are never persisted."""
         target = datetime.strptime(on_date, "%Y-%m-%d").date()
+        generated = now or datetime.now().astimezone()
+        if generated.tzinfo is None:
+            generated = generated.astimezone()
         allocations: list[dict[str, Any]] = []
+        task_metrics: dict[str, dict[str, Any]] = {}
         for task in self.repository.list():
             if task.get("status") not in {"not_started", "in_progress", "waiting"}:
                 continue
@@ -76,6 +85,16 @@ class TaskService:
                 continue
             start = self._optional_date(task.get("start_date"))
             deadline = self._optional_date(task.get("due_date") or task.get("deadline"))
+            preference = self.planning_preferences.get(str(task["id"]))
+            if preference and preference["planning_mode"] != "auto":
+                continue
+            weekdays = set((preference or {}).get("preferred_weekdays") or [])
+            if weekdays and target.isoweekday() not in weekdays:
+                continue
+            # A task explicitly marked as waiting is ready for automatic planning,
+            # even when the user did not choose a separate start date.
+            if not start and task.get("status") == "waiting":
+                start = target
             minutes = 0
             reason = ""
             if deadline and deadline < target:
@@ -88,6 +107,20 @@ class TaskService:
             elif start and not deadline and start == target:
                 minutes, reason = remaining, "start"
             if minutes:
+                daily_limit = (preference or {}).get("daily_limit_minutes")
+                if daily_limit:
+                    minutes = min(minutes, int(daily_limit))
+                remaining_days = (
+                    max((deadline - target).days + 1, 0) if deadline else None
+                )
+                deadline_hours = None
+                if deadline:
+                    deadline_end = datetime.combine(
+                        deadline + timedelta(days=1), datetime.min.time(), generated.tzinfo
+                    )
+                    deadline_hours = round(
+                        (deadline_end - generated).total_seconds() / 3600, 2
+                    )
                 allocations.append(
                     {
                         "task_id": str(task["id"]),
@@ -96,10 +129,25 @@ class TaskService:
                         "reason": reason,
                     }
                 )
+                task_metrics[str(task["id"])] = {
+                    "remaining_days": remaining_days,
+                    "deadline_hours_remaining": deadline_hours,
+                    "planning_mode": (preference or {}).get("planning_mode", "auto"),
+                }
+        next_minute = generated.replace(second=0, microsecond=0) + timedelta(minutes=1)
+        next_hour = generated.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        next_day = generated.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
         return {
             "date": target.isoformat(),
+            "generated_at": generated.isoformat(),
             "total_minutes": sum(item["planned_minutes"] for item in allocations),
             "allocations": allocations,
+            "task_metrics": task_metrics,
+            "refresh": {
+                "minute": {"next_at": next_minute.isoformat(), "fields": ["clock", "active_focus"]},
+                "hour": {"next_at": next_hour.isoformat(), "fields": ["deadline_hours_remaining", "capacity_warning"]},
+                "day": {"next_at": next_day.isoformat(), "fields": ["planned_minutes", "remaining_days", "reason"]},
+            },
         }
 
     def create(self, values: Mapping[str, Any]) -> Task:

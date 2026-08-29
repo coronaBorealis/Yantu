@@ -25,7 +25,11 @@ class FocusService:
 
     def active(self) -> dict[str, Any] | None:
         session = self.repository.active()
-        return self._reconcile(session) if session else None
+        if not session:
+            return None
+        session = self._reconcile(session)
+        self._ensure_task_started(session)
+        return session
 
     def start(self, values: Mapping[str, Any]) -> dict[str, Any]:
         if self.active():
@@ -37,8 +41,11 @@ class FocusService:
         if mode not in {"pomodoro", "free"}:
             raise ValueError("无效的计时方式")
         task_id = str(values.get("task_id") or "") or None
-        if session_type == "focus" and (not task_id or not self.tasks.get(task_id)):
-            raise ValueError("请选择有效任务")
+        task = self.tasks.get(task_id) if task_id else None
+        if session_type == "focus" and (
+            not task or task.get("status") not in {"not_started", "in_progress", "waiting"}
+        ):
+            raise ValueError("请选择尚未完成的有效任务")
         plan_block_id = str(values.get("plan_block_id") or "") or None
         if plan_block_id:
             block = self.repository.get_plan_block(plan_block_id)
@@ -56,7 +63,21 @@ class FocusService:
             "started_at": now, "last_resumed_at": now, "ended_at": None,
             "time_entry_id": None, "note": str(values.get("note") or "").strip(),
             "created_at": now, "updated_at": now,
-        })
+        }, activate_task=session_type == "focus")
+
+    def _ensure_task_started(self, session: Mapping[str, Any]) -> None:
+        if session.get("session_type") != "focus" or not session.get("task_id"):
+            return
+        task = self.tasks.get(str(session["task_id"]))
+        if task and task.get("status") in {"not_started", "waiting"}:
+            self.tasks.update(
+                str(session["task_id"]),
+                {
+                    "status": "in_progress",
+                    "completed_at": None,
+                    "updated_at": self._now().isoformat(),
+                },
+            )
 
     def pause(self, session_id: str) -> dict[str, Any]:
         session = self._required(session_id)

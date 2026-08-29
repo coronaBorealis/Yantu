@@ -75,7 +75,7 @@ def test_legacy_database_is_migrated_without_data_loss(tmp_path: Path):
     finally:
         connection.close()
 
-    assert version == 5
+    assert version == 8
     assert task_count == 1
     assert project["id"] == "legacy-project"
     assert project["category"] == "科研"
@@ -277,7 +277,7 @@ def test_higher_database_version_is_preserved_with_warning(tmp_path: Path):
     connection = sqlite3.connect(db_path)
     try:
         connection.execute("CREATE TABLE future_marker (id INTEGER PRIMARY KEY)")
-        connection.execute("PRAGMA user_version = 7")
+        connection.execute("PRAGMA user_version = 9")
         connection.commit()
     finally:
         connection.close()
@@ -287,7 +287,7 @@ def test_higher_database_version_is_preserved_with_warning(tmp_path: Path):
 
     connection = sqlite3.connect(db_path)
     try:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
         tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_schema WHERE type = 'table'")

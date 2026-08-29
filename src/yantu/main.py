@@ -12,6 +12,7 @@ import threading
 import time
 import uuid
 import webbrowser
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,8 @@ from .api.time_routes import create_time_blueprint
 from .api.planning_routes import create_planning_blueprint
 from .api.focus_routes import create_focus_blueprint
 from .api.settings_routes import create_settings_blueprint
+from .api.research_routes import create_research_blueprint
+from .api.project_routes import create_project_blueprint
 from .database.config import APP_PATHS, DEFAULT_DB_PATH
 from .database.constants import DOMAINS, PRIORITIES, STATUSES
 from .services.task_service import TaskService
@@ -40,6 +43,8 @@ from .services.appearance_service import AppearanceService
 from .services.planning_service import PlanningService
 from .services.focus_service import FocusService
 from .services.settings_service import SettingsService
+from .services.research_service import ResearchService
+from .services.project_service import ProjectService
 
 
 RUNTIME_FILE = APP_PATHS.runtime_file
@@ -178,6 +183,7 @@ def create_app(
     db_path: Path | str = DEFAULT_DB_PATH,
     llm_service_factory: ServiceFactory | None = None,
     schedule_ocr_engine=None,
+    zotero_service=None,
 ) -> Flask:
     app = Flask(__name__)
     data_directory = Path(db_path).resolve().parent
@@ -189,6 +195,8 @@ def create_app(
     planning_service = PlanningService(db_path)
     settings_service = SettingsService(db_path)
     focus_service = FocusService(db_path, settings=settings_service)
+    research_service = ResearchService(db_path)
+    project_service = ProjectService(db_path)
     app.config.update(
         DB_PATH=str(db_path),
         JSON_AS_ASCII=False,
@@ -204,6 +212,8 @@ def create_app(
     app.register_blueprint(create_planning_blueprint(db_path))
     app.register_blueprint(create_focus_blueprint(db_path, focus_service))
     app.register_blueprint(create_settings_blueprint(db_path, settings_service))
+    app.register_blueprint(create_project_blueprint(db_path))
+    app.register_blueprint(create_research_blueprint(db_path, zotero_service))
     app.register_blueprint(
         create_appearance_blueprint(appearance_config, appearance_directory)
     )
@@ -383,8 +393,9 @@ def create_app(
     def export_data():
         return jsonify(
             {
-                "version": 5,
+                "version": 8,
                 "exported_at": utc_now(),
+                "projects": [asdict(project) for project in project_service.list()],
                 "tasks": task_service.list_records(),
                 "deleted_tasks": task_service.list_deleted_records(),
                 "semesters": schedule_service.list_semesters(),
@@ -399,6 +410,7 @@ def create_app(
                 "planning": planning_service.export_backup(),
                 "focus_sessions": focus_service.export_backup(),
                 "settings": settings_service.export_backup(),
+                "research": research_service.export_backup(),
             }
         )
 
@@ -408,6 +420,12 @@ def create_app(
         tasks = payload.get("tasks")
         if not isinstance(tasks, list):
             raise ValidationError("Backup must contain a tasks list")
+        projects_imported = 0
+        for project in payload.get("projects") or []:
+            if not isinstance(project, dict):
+                continue
+            project_service.import_record(project)
+            projects_imported += 1
         imported = 0
         for source in tasks:
             clean = normalize_task(source)
@@ -499,14 +517,17 @@ def create_app(
             planning_result = planning_service.import_backup(payload["planning"])
         settings_service.import_backup(payload.get("settings"))
         focus_sessions_imported = focus_service.import_backup(payload.get("focus_sessions"))
+        research_result = research_service.import_backup(payload.get("research"))
         return jsonify({
             "imported": imported,
+            "projects_imported": projects_imported,
             "deleted_imported": deleted_imported,
             "semesters_imported": semester_imported,
             "courses_imported": course_imported,
             "appearance_imported": appearance_imported,
             **planning_result,
             "focus_sessions_imported": focus_sessions_imported,
+            **research_result,
         })
 
     @app.errorhandler(ValidationError)

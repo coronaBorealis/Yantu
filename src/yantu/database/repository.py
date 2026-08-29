@@ -11,7 +11,7 @@ from ..common import utc_now
 from .config import DEFAULT_DB_PATH
 from .constants import DOMAINS, PRIORITIES, STATUSES
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 8
 
 
 def _column_names(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -285,6 +285,125 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_focus_one_active
                 ON focus_sessions ((1))
                 WHERE status IN ('running','paused','awaiting_action');
+
+            CREATE TABLE IF NOT EXISTS task_planning_preferences (
+                task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+                planning_mode TEXT NOT NULL DEFAULT 'auto'
+                    CHECK(planning_mode IN ('auto','manual','paused')),
+                preferred_session_minutes INTEGER
+                    CHECK(preferred_session_minutes IS NULL OR preferred_session_minutes BETWEEN 5 AND 240),
+                minimum_session_minutes INTEGER NOT NULL DEFAULT 15
+                    CHECK(minimum_session_minutes BETWEEN 5 AND 120),
+                daily_limit_minutes INTEGER
+                    CHECK(daily_limit_minutes IS NULL OR daily_limit_minutes > 0),
+                preferred_weekdays_json TEXT NOT NULL DEFAULT '[]',
+                earliest_start_time TEXT,
+                latest_end_time TEXT,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS research_sources (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL DEFAULT 'zotero',
+                library_type TEXT NOT NULL DEFAULT 'user'
+                    CHECK(library_type IN ('user','group','local')),
+                library_id TEXT NOT NULL DEFAULT '',
+                display_name TEXT NOT NULL,
+                access_mode TEXT NOT NULL DEFAULT 'local'
+                    CHECK(access_mode IN ('local','web')),
+                base_url TEXT NOT NULL DEFAULT 'http://127.0.0.1:23119/api',
+                server_id TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+                auto_sync INTEGER NOT NULL DEFAULT 0 CHECK(auto_sync IN (0,1)),
+                sync_cursor TEXT,
+                last_synced_at TEXT,
+                last_sync_status TEXT NOT NULL DEFAULT 'never'
+                    CHECK(last_sync_status IN ('never','ok','error','running')),
+                last_sync_error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(provider, library_type, library_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS research_items (
+                id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL REFERENCES research_sources(id) ON DELETE CASCADE,
+                external_key TEXT NOT NULL,
+                item_type TEXT NOT NULL DEFAULT 'journalArticle',
+                title TEXT NOT NULL,
+                abstract TEXT NOT NULL DEFAULT '',
+                creators_json TEXT NOT NULL DEFAULT '[]',
+                publication_title TEXT NOT NULL DEFAULT '',
+                published_at TEXT,
+                doi TEXT NOT NULL DEFAULT '',
+                url TEXT NOT NULL DEFAULT '',
+                zotero_uri TEXT NOT NULL DEFAULT '',
+                attachment_path TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                external_version INTEGER,
+                collected_at TEXT,
+                last_synced_at TEXT,
+                deleted_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(source_id, external_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS task_research_items (
+                task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                research_item_id TEXT NOT NULL REFERENCES research_items(id) ON DELETE CASCADE,
+                relation_type TEXT NOT NULL DEFAULT 'reference'
+                    CHECK(relation_type IN ('reference','reading','review','citation','output')),
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(task_id, research_item_id, relation_type)
+            );
+
+            CREATE TABLE IF NOT EXISTS project_research_items (
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                research_item_id TEXT NOT NULL REFERENCES research_items(id) ON DELETE CASCADE,
+                relation_type TEXT NOT NULL DEFAULT 'reference'
+                    CHECK(relation_type IN ('reference','reading','review','citation','output')),
+                import_mode TEXT NOT NULL DEFAULT 'manual'
+                    CHECK(import_mode IN ('manual','collection','search')),
+                source_collection_key TEXT,
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(project_id, research_item_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS research_inbox (
+                research_item_id TEXT PRIMARY KEY REFERENCES research_items(id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','converted','dismissed')),
+                task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+                added_at TEXT NOT NULL,
+                resolved_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS research_sync_runs (
+                id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL REFERENCES research_sources(id) ON DELETE CASCADE,
+                status TEXT NOT NULL CHECK(status IN ('running','completed','failed')),
+                cursor_before TEXT,
+                cursor_after TEXT,
+                imported_count INTEGER NOT NULL DEFAULT 0,
+                deleted_count INTEGER NOT NULL DEFAULT 0,
+                error TEXT NOT NULL DEFAULT '',
+                started_at TEXT NOT NULL,
+                ended_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_research_items_source
+                ON research_items(source_id, deleted_at, collected_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_task_research_task
+                ON task_research_items(task_id, relation_type);
+            CREATE INDEX IF NOT EXISTS idx_project_research_project
+                ON project_research_items(project_id, relation_type, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_research_inbox_status
+                ON research_inbox(status, added_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_research_sync_source_started
+                ON research_sync_runs(source_id, started_at DESC);
             """
         )
         now = utc_now()
@@ -315,6 +434,16 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                 "start_time": "TEXT",
                 "end_time": "TEXT",
                 "duration": "INTEGER NOT NULL DEFAULT 0 CHECK(duration >= 0)",
+            },
+        )
+        _add_missing_columns(
+            connection,
+            "research_sources",
+            {
+                "access_mode": "TEXT NOT NULL DEFAULT 'local' CHECK(access_mode IN ('local','web'))",
+                "base_url": "TEXT NOT NULL DEFAULT 'http://127.0.0.1:23119/api'",
+                "server_id": "TEXT",
+                "auto_sync": "INTEGER NOT NULL DEFAULT 0 CHECK(auto_sync IN (0,1))",
             },
         )
         if current_version < SCHEMA_VERSION:

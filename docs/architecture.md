@@ -32,6 +32,10 @@ flowchart LR
     SETTINGS_API --> SETTINGS_SERVICE["SettingsService"]
     SETTINGS_SERVICE --> SETTINGS_REPO["SettingsRepository"]
     SETTINGS_SERVICE --> VAULT["Windows Credential Manager"]
+    UI --> RESEARCH_API["Research API"]
+    RESEARCH_API --> RESEARCH_SERVICE["ResearchService"]
+    RESEARCH_SERVICE --> RESEARCH_REPO["ResearchRepository"]
+    RESEARCH_REPO --> DB
 ```
 
 依赖方向固定为 `API -> Service -> Interface/Repository`。任务业务代码不导入任何具体模型 SDK，也不处理 API Key。
@@ -69,18 +73,28 @@ sequenceDiagram
 
 Task 和 Course 使用 `deleted_at` 软删除。常规查询统一排除回收站条目；恢复会清空该字段，只有回收站中的条目才能永久删除。前端右键菜单和移动端“⋯”菜单调用相同 API，并通过短时撤销降低误删风险。
 
-备份格式版本为 `5`，包含课程、学期、课程例外、回收站任务、规划偏好、已确认规划批次、已结束专注历史和允许备份的非秘密设置，同时继续接受旧版仅包含 `tasks` 的备份。API Key、活动会话和本机请求令牌永不导出。
+备份格式版本为 `8`，包含项目、课程、学期、课程例外、回收站任务、规划偏好、已确认规划批次、已结束专注历史、科研文献关联和允许备份的非秘密设置，同时继续接受旧版仅包含 `tasks` 的备份。DeepSeek/Zotero API Key、活动会话和本机请求令牌永不导出。
 
 ## 每日容量与专注计时
 
-`TaskService.daily_plan(date)` 是每日建议投入的唯一计算入口。它不会修改任务预计工时，而是用剩余工作量动态生成只读分配结果：
+`TaskService.daily_plan(date)` 是每日建议投入的唯一计算入口。预计工时、实际工时、开始日期和 Deadline 是持久化事实；今日投入、剩余天数、截止倒计时和过期状态是按请求生成的只读投影，不写回任务表：
 
 ```text
 remaining = max(estimated_minutes - actual_minutes, 0)
 today = ceil(remaining / inclusive_days(today, deadline))
 ```
 
-未来开始的任务和没有开始日期的未来 Deadline 不会提前占用今天容量；Deadline 当天承接全部剩余量。接口 `GET /api/planning/daily?date=YYYY-MM-DD` 返回任务级分配及总分钟数，前端只负责呈现。
+未来开始的任务不会提前占用今天容量。没有开始日期的普通任务仍不被擅自安排；当任务状态为 `waiting` 时，表示用户已明确将它交给自动规划，因此从查询当天开始按剩余日期动态分摊。Deadline 当天承接全部剩余量。
+
+接口 `GET /api/planning/daily?date=YYYY-MM-DD` 保持原有 `allocations` 合同，并额外返回 `generated_at`、`task_metrics` 与 `refresh`：
+
+| 刷新层级 | 动态内容 | 前端行为 |
+| --- | --- | --- |
+| 每分钟 | 当前时间、活动专注状态 | 页面可见时刷新；切回窗口立即补刷新 |
+| 每小时 | Deadline 剩余小时、容量风险 | 重新查询服务端投影，不依赖旧页面缓存 |
+| 每日 | 建议投入、剩余天数、逾期原因 | 跨午夜重新加载当日任务、课程和规划 |
+
+确认后的 `PlanningRun` 是用户认可过的历史快照，不会被后台静默覆盖。`GET /api/planning/plans?date=` 会将快照与当前任务投影比较；实际投入、日期或自动规划范围变化时返回 `plan_state.needs_refresh = true`，界面引导用户重新预览和确认。
 
 专注计时以 `focus_sessions` 保存可恢复的生命周期，TimeEntry 仍是任务实际投入的唯一账本：
 
@@ -105,13 +119,14 @@ sequenceDiagram
 
 ### 多任务规划数据合同
 
-规划层使用三个持久化实体，数据库 `user_version = 5`：
+规划层使用四类持久化实体，数据库 `user_version = 8`：
 
 | 实体 | 职责 |
 | --- | --- |
 | `planning_profiles` | 单用户工作时段、工作日、专注/休息长度、最大连续专注、课程缓冲、是否使用番茄节拍 |
 | `planning_runs` | 一次确认规划的日期范围、来源策略、输入快照、容量警告和确认时间 |
 | `plan_blocks` | 可执行的专注、短休息、长休息和缓冲时间块；专注块可关联 Task |
+| `task_planning_preferences` | 每个任务的自动/手动/暂停模式、会话长度、每日上限、偏好星期和可用时段；为未来 AI 排程提供约束 |
 
 `strategy` 支持 `rule`、`ai`、`manual`。AI 将来只能生成与规则引擎相同的 Preview 数据，不直接写表；`POST /api/planning/confirm` 会复验任务引用、时间格式、块类型和重叠关系，然后在一个事务中写入 PlanningRun 与全部 PlanBlock。Preview ID 同时作为幂等键，重复确认不会生成重复批次。
 
@@ -135,6 +150,48 @@ flowchart LR
 | POST | `/api/planning/preview` | 生成不落库的多任务时间表 |
 | POST | `/api/planning/confirm` | 校验并原子保存预览 |
 | GET | `/api/planning/plans?date=` | 读取指定日期最新确认时间轴 |
+| GET / PUT | `/api/planning/tasks/{id}/preference` | 读取或更新任务级排程约束 |
+
+## 科研文献与 Zotero 边界
+
+v7 在 v6 本地数据合同上增加只读 Zotero 适配器；v8 增加科研项目—论文关联与文件夹/检索导入。任务规划与 UI 不直接依赖 Zotero SDK；适配器只负责认证、读取、版本检查和数据转换：
+
+| 实体 | 职责 |
+| --- | --- |
+| `research_sources` | Zotero 用户/群组/本地文库标识、同步游标与最近同步结果 |
+| `research_items` | 论文和附件的稳定外部 Key、题录、DOI、URL、本地附件路径及原始扩展元数据 |
+| `task_research_items` | Task 与论文的多对多关联，区分参考、待读、综述、引用和产出 |
+| `project_research_items` | 科研 Project 与论文的幂等关联，记录文件夹/检索来源和导入时间 |
+| `research_inbox` | 新收集论文的待处理队列；转换或忽略都有显式状态，重复同步不会重复入队 |
+| `research_sync_runs` | 每次同步的前后游标、导入/删除数量、错误和完成状态，便于诊断但不保存凭据 |
+
+支持两种读取模式：
+
+- **Local API（默认）**：`http://127.0.0.1:23119/api`，读取不需要 Key，不经过互联网；只允许 loopback 地址。首次连接保存 `Zotero-Server-ID`，后续不匹配时停止同步，避免混用两套本地 Zotero 数据库的版本号。
+- **Web API**：只允许 `https://api.zotero.org`；私有文库 Key 保存到 Windows Credential Manager，账户名按来源 ID 隔离，请求使用 `Zotero-API-Key` 头，URL、数据库、日志和备份均不含 Key。
+
+同步使用 `since=<Last-Modified-Version>` 读取变更，并读取 `/deleted?since=` 处理远端删除。只有全部页面和删除清单使用同一文库版本时才推进 `sync_cursor`；失败时保留旧游标，下一次可安全重试。相同来源的 `external_key` 唯一，重复同步采用 upsert，科研收件箱使用 `INSERT OR IGNORE` 避免重复入队。
+
+`zotero_uri` 只接受 `zotero://select/...` 本地直达链接。论文转任务遵循 Preview/Confirm：预览不写库；确认时在一个事务中创建 Task、写入 `task_research_items` 并将收件箱状态改为 `converted`，重复确认返回原任务。
+
+项目论文导入同样遵循 Preview/Confirm。预览直接读取 Zotero 的 Collection 或 `q` 快速检索结果，不写 Yantu；确认阶段按选中的 Item Key 重新读取题录、幂等 upsert `research_items`，再写入 `project_research_items`。文件夹模式可以递归读取子 Collection，同一论文出现在多个文件夹时按 Item Key 去重。该流程不把论文自动转换成任务，也不写回 Zotero。
+
+Zotero 接口：
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| GET / POST | `/api/research/sources` | 列出或保存本机/Web 连接；响应不返回完整 Key |
+| POST | `/api/research/sources/{id}/test` | 验证连接、权限、Server ID 和文库版本 |
+| POST | `/api/research/sources/{id}/sync` | 手动执行只读增量同步 |
+| GET | `/api/research/sources/{id}/collections` | 读取 Zotero 文件夹树 |
+| POST | `/api/research/sources/{id}/project-import-preview` | 按文件夹或检索生成项目导入预览，不写数据库 |
+| GET | `/api/research/projects/{id}/items` | 读取科研项目已关联论文 |
+| POST | `/api/research/projects/{id}/imports` | 确认并幂等导入所选论文 |
+| GET | `/api/research/inbox` | 读取待处理论文 |
+| POST | `/api/research/inbox/{id}/task-preview` | 生成可编辑任务草稿，不写数据库 |
+| POST | `/api/research/inbox/{id}/task-confirm` | 原子创建阅读任务并关联论文 |
+
+本阶段不写回 Zotero、不下载附件、不解析 PDF 全文，也不后台自动同步。Zotero 官方说明本机 API 读取无需认证，Web API 应通过请求头携带 Key，并推荐用 `since` 和 `Last-Modified-Version` 增量读取：[Local API](https://www.zotero.org/support/dev/web_api/v3/local_api) · [Web API Basics](https://www.zotero.org/support/dev/web_api/v3/basics) · [Syncing](https://www.zotero.org/support/dev/web_api/v3/syncing)
 
 ## 外观设置边界
 

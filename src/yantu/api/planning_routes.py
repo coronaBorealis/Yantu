@@ -32,7 +32,19 @@ def create_planning_blueprint(db_path: Path | str) -> Blueprint:
         value = request.args.get("date")
         if not value:
             raise ValueError("date 不能为空")
-        return jsonify({"blocks": planning.list_for_date(value)})
+        return jsonify(planning.plan_state_for_date(value))
+
+    @blueprint.get("/tasks/<task_id>/preference")
+    def task_preference_get(task_id: str):
+        return jsonify({"preference": planning.get_task_preference(task_id)})
+
+    @blueprint.put("/tasks/<task_id>/preference")
+    def task_preference_put(task_id: str):
+        return jsonify({
+            "preference": planning.update_task_preference(
+                task_id, request.get_json(silent=True) or {}
+            )
+        })
 
     @blueprint.errorhandler(ValueError)
     def invalid_planning(error: ValueError):

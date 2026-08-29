@@ -86,7 +86,7 @@ def test_schema_v5_migration_is_idempotent_and_preserves_v4_data(tmp_path: Path)
     with sqlite3.connect(db_path) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
         assert {"focus_sessions", "app_settings"} <= tables
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
         assert connection.execute("SELECT title FROM tasks WHERE id='kept'").fetchone()[0] == "阅读论文"
 
 
@@ -96,6 +96,10 @@ def test_focus_pause_resume_recovery_and_idempotent_completion(tmp_path: Path) -
     clock = Clock()
     service = make_focus(db_path, clock)
     session = service.start({"task_id": "paper", "mode": "pomodoro", "target_seconds": 1500})
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute(
+            "SELECT status FROM tasks WHERE id='paper'"
+        ).fetchone()[0] == "in_progress"
     with pytest.raises(ValueError, match="已有"):
         service.start({"task_id": "paper", "target_seconds": 60})
 
@@ -113,7 +117,12 @@ def test_focus_pause_resume_recovery_and_idempotent_completion(tmp_path: Path) -
     assert completed["time_entry_id"] == repeated["time_entry_id"]
     with sqlite3.connect(db_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM time_entries").fetchone()[0] == 1
-        assert connection.execute("SELECT actual_minutes FROM tasks WHERE id='paper'").fetchone()[0] == 25
+        actual, progress, status = connection.execute(
+            "SELECT actual_minutes, progress, status FROM tasks WHERE id='paper'"
+        ).fetchone()
+        assert actual == 25
+        assert progress == 41
+        assert status == "in_progress"
 
 
 def test_partial_cancel_and_breaks_keep_one_time_ledger(tmp_path: Path) -> None:
@@ -140,6 +149,25 @@ def test_partial_cancel_and_breaks_keep_one_time_ledger(tmp_path: Path) -> None:
     with sqlite3.connect(db_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM time_entries").fetchone()[0] == 2
         assert connection.execute("SELECT actual_minutes FROM tasks WHERE id='paper'").fetchone()[0] == 2
+
+
+def test_active_focus_repairs_legacy_task_status(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy-active.db"
+    add_task(db_path)
+    clock = Clock()
+    service = make_focus(db_path, clock)
+    service.start({"task_id": "paper", "mode": "free", "target_seconds": 0})
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE tasks SET status='not_started' WHERE id='paper'"
+        )
+        connection.commit()
+
+    assert service.active()["task_id"] == "paper"
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute(
+            "SELECT status FROM tasks WHERE id='paper'"
+        ).fetchone()[0] == "in_progress"
 
 
 def test_completed_focus_updates_linked_plan_block_and_cross_midnight_stats(tmp_path: Path) -> None:
@@ -247,7 +275,7 @@ def test_focus_api_history_stats_and_backup_exclude_active_session(tmp_path: Pat
     stats = client.get("/api/focus/stats?start=2026-01-01&end=2026-12-31").get_json()["stats"]
     assert stats["focus_minutes"] == 0
     backup = client.get("/api/export").get_json()
-    assert backup["version"] == 5 and "focus_sessions" in backup and "settings" in backup
+    assert backup["version"] == 8 and "focus_sessions" in backup and "settings" in backup
     assert "api_key" not in json.dumps(backup).lower()
 
 

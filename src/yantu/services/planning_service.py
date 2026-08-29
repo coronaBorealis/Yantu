@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..common import utc_now
-from ..database.repositories import PlanningRepository, TaskRepository
+from ..database.repositories import (
+    PlanningRepository,
+    TaskPlanningPreferenceRepository,
+    TaskRepository,
+)
 from .schedule_service import ScheduleService
 from .task_service import TaskService
 
@@ -21,6 +25,7 @@ class PlanningService:
         self.tasks = TaskRepository(db_path)
         self.task_service = TaskService(db_path)
         self.schedule_service = ScheduleService(db_path)
+        self.task_preferences = TaskPlanningPreferenceRepository(db_path)
 
     def get_profile(self) -> dict[str, Any]:
         return self.repository.get_profile()
@@ -75,6 +80,7 @@ class PlanningService:
         capacity = sum(int((end - start).total_seconds() // 60) for start, end in windows)
         snapshot = {
             "date": target.isoformat(),
+            "generated_at": plan["generated_at"],
             "profile": profile,
             "task_allocations": [
                 {
@@ -164,8 +170,110 @@ class PlanningService:
     def list_for_date(self, value: Any) -> list[dict[str, Any]]:
         return self.repository.list_for_date(self._date(value).isoformat())
 
+    def plan_state_for_date(self, value: Any) -> dict[str, Any]:
+        target = self._date(value).isoformat()
+        blocks = self.repository.list_for_date(target)
+        run = self.repository.latest_run_for_date(target)
+        projection = self.task_service.daily_plan(target)
+        reasons: list[str] = []
+        if run:
+            previous = {
+                str(item.get("task_id")): (
+                    int(item.get("planned_minutes") or 0),
+                    int(item.get("remaining_minutes") or 0),
+                )
+                for item in (run.get("input_snapshot") or {}).get("task_allocations", [])
+            }
+            current = {
+                str(item["task_id"]): (
+                    int(item["planned_minutes"]), int(item["remaining_minutes"])
+                )
+                for item in projection["allocations"]
+                if item["reason"] != "overdue"
+            }
+            if previous != current:
+                reasons.append("任务剩余工时、日期或自动规划范围已变化")
+        return {
+            "blocks": blocks,
+            "plan_state": {
+                "run_id": run.get("id") if run else None,
+                "needs_refresh": bool(run and reasons),
+                "reasons": reasons,
+                "checked_at": projection["generated_at"],
+                "next_check_at": projection["refresh"]["minute"]["next_at"],
+            },
+        }
+
+    def get_task_preference(self, task_id: str) -> dict[str, Any]:
+        if not self.tasks.get(task_id):
+            raise ValueError("任务不存在")
+        return self.task_preferences.get(task_id) or {
+            "task_id": task_id,
+            "planning_mode": "auto",
+            "preferred_session_minutes": None,
+            "minimum_session_minutes": 15,
+            "daily_limit_minutes": None,
+            "preferred_weekdays": [],
+            "earliest_start_time": None,
+            "latest_end_time": None,
+            "updated_at": None,
+        }
+
+    def update_task_preference(self, task_id: str, values: Mapping[str, Any]) -> dict[str, Any]:
+        current = self.get_task_preference(task_id)
+        candidate = {**current, **dict(values), "task_id": task_id}
+        mode = str(candidate.get("planning_mode") or "auto")
+        if mode not in {"auto", "manual", "paused"}:
+            raise ValueError("planning_mode 必须是 auto、manual 或 paused")
+        weekdays = candidate.get("preferred_weekdays") or []
+        if not isinstance(weekdays, list) or any(
+            not isinstance(day, int) or day < 1 or day > 7 for day in weekdays
+        ):
+            raise ValueError("preferred_weekdays 必须是 1 到 7 的整数数组")
+        for key, low, high in (
+            ("preferred_session_minutes", 5, 240),
+            ("minimum_session_minutes", 5, 120),
+            ("daily_limit_minutes", 1, 1440),
+        ):
+            if candidate.get(key) not in (None, ""):
+                number = int(candidate[key])
+                if not low <= number <= high:
+                    raise ValueError(f"{key} 必须在 {low} 到 {high} 之间")
+                candidate[key] = number
+            elif key != "minimum_session_minutes":
+                candidate[key] = None
+        for key in ("earliest_start_time", "latest_end_time"):
+            raw = candidate.get(key)
+            if raw in (None, ""):
+                candidate[key] = None
+            else:
+                candidate[key] = self._clock(raw, key)
+        if (
+            candidate["earliest_start_time"]
+            and candidate["latest_end_time"]
+            and candidate["earliest_start_time"] >= candidate["latest_end_time"]
+        ):
+            raise ValueError("最晚结束时间必须晚于最早开始时间")
+        return self.task_preferences.upsert(
+            {
+                "task_id": task_id,
+                "planning_mode": mode,
+                "preferred_session_minutes": candidate["preferred_session_minutes"],
+                "minimum_session_minutes": int(candidate.get("minimum_session_minutes") or 15),
+                "daily_limit_minutes": candidate["daily_limit_minutes"],
+                "preferred_weekdays": sorted(set(weekdays)),
+                "earliest_start_time": candidate["earliest_start_time"],
+                "latest_end_time": candidate["latest_end_time"],
+                "updated_at": utc_now(),
+            }
+        )
+
     def export_backup(self) -> dict[str, Any]:
-        return {"profile": self.get_profile(), "runs": self.repository.list_runs()}
+        return {
+            "profile": self.get_profile(),
+            "runs": self.repository.list_runs(),
+            "task_preferences": self.task_preferences.list_all(),
+        }
 
     def import_backup(self, payload: Any) -> dict[str, int]:
         if not isinstance(payload, Mapping):
@@ -173,6 +281,12 @@ class PlanningService:
         profile = payload.get("profile")
         if isinstance(profile, Mapping):
             self.update_profile(profile)
+        for preference in payload.get("task_preferences") or []:
+            if (
+                isinstance(preference, Mapping)
+                and self.tasks.get(str(preference.get("task_id") or ""))
+            ):
+                self.update_task_preference(str(preference["task_id"]), preference)
         imported = 0
         for source in payload.get("runs") or []:
             if not isinstance(source, Mapping) or self.repository.get_run(str(source.get("id") or "")):

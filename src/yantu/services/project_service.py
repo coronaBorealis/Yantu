@@ -36,6 +36,28 @@ class ProjectService:
         )
         return Project.from_record(record)
 
+    def import_record(self, values: Mapping[str, Any]) -> Project:
+        project_id = str(values.get("id") or uuid.uuid4())
+        existing = self.get(project_id)
+        if existing:
+            updated = self.update(project_id, values)
+            assert updated is not None
+            return updated
+        name = self._name(values.get("name"))
+        category = self._category(values.get("category", ProjectCategory.PERSONAL.value))
+        now = utc_now()
+        record = self.repository.create(
+            {
+                "id": project_id,
+                "name": name,
+                "description": str(values.get("description") or "").strip(),
+                "category": category.value,
+                "created_at": str(values.get("created_at") or now),
+                "updated_at": now,
+            }
+        )
+        return Project.from_record(record)
+
     def update(self, project_id: str, values: Mapping[str, Any]) -> Project | None:
         changes: dict[str, Any] = {}
         if "name" in values:

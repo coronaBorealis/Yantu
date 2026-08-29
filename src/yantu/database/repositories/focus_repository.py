@@ -35,7 +35,9 @@ class FocusRepository:
             ).fetchone()
         return dict(row) if row else None
 
-    def create(self, record: dict[str, Any]) -> dict[str, Any]:
+    def create(
+        self, record: dict[str, Any], *, activate_task: bool = False
+    ) -> dict[str, Any]:
         columns = list(record)
         try:
             with database(self.db_path) as connection:
@@ -43,6 +45,15 @@ class FocusRepository:
                     f"INSERT INTO focus_sessions ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
                     [record[key] for key in columns],
                 )
+                if activate_task and record.get("task_id"):
+                    connection.execute(
+                        """
+                        UPDATE tasks
+                        SET status = 'in_progress', completed_at = NULL, updated_at = ?
+                        WHERE id = ? AND status IN ('not_started', 'waiting')
+                        """,
+                        (record["updated_at"], record["task_id"]),
+                    )
         except sqlite3.IntegrityError as exc:
             if "idx_focus_one_active" in str(exc) or "focus_sessions.1" in str(exc):
                 raise ValueError("已有正在进行的专注或休息") from exc
@@ -105,17 +116,36 @@ class FocusRepository:
                     time_entry,
                 )
                 task = connection.execute(
-                    "SELECT actual_minutes FROM tasks WHERE id = ?", (time_entry["task_id"],)
+                    """SELECT actual_minutes, estimated_minutes, progress, status
+                       FROM tasks WHERE id = ?""",
+                    (time_entry["task_id"],),
                 ).fetchone()
                 if task:
                     actual = max(0, int(task[0] or 0) + int(time_entry["duration"]))
+                    estimated = max(0, int(task[1] or 0))
+                    progress = max(0, int(task[2] or 0))
+                    if estimated:
+                        progress = max(progress, min(99, int(actual * 100 / estimated)))
+                    status = (
+                        "in_progress"
+                        if task[3] in {"not_started", "waiting"}
+                        else task[3]
+                    )
                     connection.execute(
                         """
                         UPDATE tasks
-                        SET actual_minutes = ?, actual_hours = ?, updated_at = ?
+                        SET actual_minutes = ?, actual_hours = ?, progress = ?,
+                            status = ?, completed_at = NULL, updated_at = ?
                         WHERE id = ?
                         """,
-                        (actual, actual / 60.0, updated_at, time_entry["task_id"]),
+                        (
+                            actual,
+                            actual / 60.0,
+                            progress,
+                            status,
+                            updated_at,
+                            time_entry["task_id"],
+                        ),
                     )
                 if session["plan_block_id"]:
                     block = connection.execute(

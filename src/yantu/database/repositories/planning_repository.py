@@ -123,6 +123,18 @@ class PlanningRepository:
         newest_run = rows[0]["run_id"]
         return [dict(row) for row in rows if row["run_id"] == newest_run]
 
+    def latest_run_for_date(self, block_date: str) -> dict[str, Any] | None:
+        with database(self.db_path) as connection:
+            row = connection.execute(
+                """
+                SELECT id FROM planning_runs
+                WHERE start_date <= ? AND end_date >= ? AND status = 'confirmed'
+                ORDER BY confirmed_at DESC LIMIT 1
+                """,
+                (block_date, block_date),
+            ).fetchone()
+        return self.get_run(str(row[0])) if row else None
+
     def list_runs(self) -> list[dict[str, Any]]:
         with database(self.db_path) as connection:
             ids = [
