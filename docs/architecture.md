@@ -28,6 +28,10 @@ flowchart LR
     FOCUS_API --> FOCUS_SERVICE["FocusService"]
     FOCUS_SERVICE --> FOCUS_REPO["FocusRepository"]
     FOCUS_REPO --> DB
+    FOCUS_SERVICE --> HABIT_SERVICE["FocusHabitService"]
+    HABIT_SERVICE --> PROBE["Windows 前台应用 / 空闲信号"]
+    HABIT_SERVICE --> HABIT_REPO["FocusHabitRepository"]
+    HABIT_REPO --> DB
     UI --> SETTINGS_API["Settings API"]
     SETTINGS_API --> SETTINGS_SERVICE["SettingsService"]
     SETTINGS_SERVICE --> SETTINGS_REPO["SettingsRepository"]
@@ -73,7 +77,7 @@ sequenceDiagram
 
 Task 和 Course 使用 `deleted_at` 软删除。常规查询统一排除回收站条目；恢复会清空该字段，只有回收站中的条目才能永久删除。前端右键菜单和移动端“⋯”菜单调用相同 API，并通过短时撤销降低误删风险。
 
-备份格式版本为 `8`，包含项目、课程、学期、课程例外、回收站任务、规划偏好、已确认规划批次、已结束专注历史、科研文献关联和允许备份的非秘密设置，同时继续接受旧版仅包含 `tasks` 的备份。DeepSeek/Zotero API Key、活动会话和本机请求令牌永不导出。
+备份格式版本为 `9`，包含项目、课程、学期、课程例外、回收站任务、规划偏好、已确认规划批次、已结束专注历史、专注习惯方案与应用时长汇总、科研文献关联和允许备份的非秘密设置，同时继续接受旧版仅包含 `tasks` 的备份。DeepSeek/Zotero API Key、活动中的计时和本机请求令牌永不导出。
 
 ## 每日容量与专注计时
 
@@ -117,9 +121,27 @@ sequenceDiagram
 
 `focus_sessions` 同一时间只允许一个 `running / paused / awaiting_action` 会话。Service 依据 `elapsed_seconds + last_resumed_at` 恢复重启后的有效经过时间，倒计时超时只进入 `awaiting_action`；重复完成不会重复创建 TimeEntry。休息会话不计入任务工时。接口包括 `/api/focus/active`、会话状态变更、历史和统计；原有 TimeEntry CRUD 保持兼容。
 
+### 专注习惯监测与隐私边界
+
+专注习惯监测是每轮显式选择的可选能力。`FocusHabitMonitor` 只在源码服务或桌面应用的真实运行入口启动，测试用应用工厂默认不创建后台线程。它每 5 秒读取一次 Windows 前台进程名，并通过系统“距上次输入时间”判断用户是否仍活跃；暂停、等待确认和休息期间只移动采样锚点，不累计时长。
+
+| 实体 | 职责 |
+| --- | --- |
+| `focus_habit_profiles` | 目标应用、空闲阈值和切换提醒阈值；可停用但不破坏历史 |
+| `focus_habit_sessions` | 每轮方案快照、有效/空闲/非目标时长、切换次数和质量分 |
+| `focus_app_usage` | 按进程名聚合本轮时长；不保存窗口标题、文件路径或 URL |
+
+Windows 适配器使用前台窗口所属进程与 `GetLastInputInfo`。输入信号只回答“多久没有任何输入”，不会读取或保存键入内容、鼠标坐标、滚动方向、截图、文档名或浏览内容。系统不支持或采样失败时，该轮标记为 `unavailable`，FocusSession 和 TimeEntry 状态机继续正常工作。每次采样最多计入 30 秒，避免休眠或调试暂停被误算为学习时间。
+
+习惯接口包括 `/api/focus/habits`、`/api/focus/habits/stats`、`/api/focus/habits/capability`、`/api/focus/habits/current-app` 和 `/api/focus/sessions/{id}/habit`。统计接口按日期范围聚合有效专注、空闲、非目标应用、质量分、学习天数和当前连续天数；所有写操作仍受本机请求令牌保护。
+
+`GET /api/focus/sessions/{id}/habit` 在返回当前聚合结果前执行一次安全采样。桌面和源码正式入口仍运行后台监测线程，以覆盖专注面板收起或页面不可见的场景；轮询采样用于避免不带后台监测器的嵌入式运行方式出现“方案已选择但数值不更新”。两条通道共享 `last_sampled_at`，单次最多计入 30 秒，不会重复累计同一时间段。
+
+专注启动请求可传入 `use_planning_profile: true`。此时 `FocusService` 以数据库中的当前 `PlanningProfile` 决定倒计时/自由模式及单轮时长，不信任浏览器缓存的旧值；短休息、长休息和轮次仍在完成阶段从同一规划偏好读取。
+
 ### 多任务规划数据合同
 
-规划层使用四类持久化实体，数据库 `user_version = 8`：
+规划层使用四类持久化实体，数据库 `user_version = 9`：
 
 | 实体 | 职责 |
 | --- | --- |

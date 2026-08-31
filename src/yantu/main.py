@@ -42,6 +42,7 @@ from .services.schedule_service import ScheduleService
 from .services.appearance_service import AppearanceService
 from .services.planning_service import PlanningService
 from .services.focus_service import FocusService
+from .services.focus_habit_service import FocusHabitMonitor, FocusHabitService
 from .services.settings_service import SettingsService
 from .services.research_service import ResearchService
 from .services.project_service import ProjectService
@@ -184,6 +185,8 @@ def create_app(
     llm_service_factory: ServiceFactory | None = None,
     schedule_ocr_engine=None,
     zotero_service=None,
+    focus_habit_service: FocusHabitService | None = None,
+    start_activity_monitor: bool = False,
 ) -> Flask:
     app = Flask(__name__)
     data_directory = Path(db_path).resolve().parent
@@ -194,7 +197,11 @@ def create_app(
     appearance_service = AppearanceService(appearance_config, appearance_directory)
     planning_service = PlanningService(db_path)
     settings_service = SettingsService(db_path)
-    focus_service = FocusService(db_path, settings=settings_service)
+    habit_service = focus_habit_service or FocusHabitService(db_path)
+    focus_service = FocusService(db_path, settings=settings_service, habits=habit_service)
+    habit_monitor = FocusHabitMonitor(habit_service)
+    if start_activity_monitor:
+        habit_monitor.start()
     research_service = ResearchService(db_path)
     project_service = ProjectService(db_path)
     app.config.update(
@@ -210,7 +217,8 @@ def create_app(
     app.register_blueprint(create_schedule_blueprint(db_path, schedule_ocr_engine))
     app.register_blueprint(create_time_blueprint(db_path))
     app.register_blueprint(create_planning_blueprint(db_path))
-    app.register_blueprint(create_focus_blueprint(db_path, focus_service))
+    app.extensions["yantu_focus_habit_monitor"] = habit_monitor
+    app.register_blueprint(create_focus_blueprint(db_path, focus_service, habit_service))
     app.register_blueprint(create_settings_blueprint(db_path, settings_service))
     app.register_blueprint(create_project_blueprint(db_path))
     app.register_blueprint(create_research_blueprint(db_path, zotero_service))
@@ -393,7 +401,7 @@ def create_app(
     def export_data():
         return jsonify(
             {
-                "version": 8,
+                "version": 9,
                 "exported_at": utc_now(),
                 "projects": [asdict(project) for project in project_service.list()],
                 "tasks": task_service.list_records(),
@@ -409,6 +417,7 @@ def create_app(
                 "appearance": appearance_service.export_backup(),
                 "planning": planning_service.export_backup(),
                 "focus_sessions": focus_service.export_backup(),
+                "focus_habits": habit_service.export_backup(),
                 "settings": settings_service.export_backup(),
                 "research": research_service.export_backup(),
             }
@@ -517,6 +526,7 @@ def create_app(
             planning_result = planning_service.import_backup(payload["planning"])
         settings_service.import_backup(payload.get("settings"))
         focus_sessions_imported = focus_service.import_backup(payload.get("focus_sessions"))
+        focus_habit_result = habit_service.import_backup(payload.get("focus_habits"))
         research_result = research_service.import_backup(payload.get("research"))
         return jsonify({
             "imported": imported,
@@ -527,6 +537,7 @@ def create_app(
             "appearance_imported": appearance_imported,
             **planning_result,
             "focus_sessions_imported": focus_sessions_imported,
+            **focus_habit_result,
             **research_result,
         })
 
@@ -625,7 +636,7 @@ def main() -> int:
 
     db_path = args.db.resolve()
     runtime_file = db_path.parent / "runtime.json"
-    app = create_app(db_path)
+    app = create_app(db_path, start_activity_monitor=True)
     instance_id = str(uuid.uuid4())
     app.config["INSTANCE_ID"] = instance_id
     app.config["REQUEST_TOKEN"] = secrets.token_urlsafe(32)
@@ -659,6 +670,9 @@ def main() -> int:
     except KeyboardInterrupt:
         print("Stopping Yantu...", flush=True)
     finally:
+        monitor = app.extensions.get("yantu_focus_habit_monitor")
+        if monitor:
+            monitor.stop()
         server.server_close()
         try:
             runtime = json.loads(runtime_file.read_text(encoding="utf-8"))

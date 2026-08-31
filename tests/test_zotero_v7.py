@@ -93,7 +93,7 @@ def test_v6_source_table_upgrades_to_current_without_losing_source(tmp_path: Pat
         columns = {row[1] for row in connection.execute("PRAGMA table_info(research_sources)")}
         assert {"access_mode", "base_url", "server_id", "auto_sync"} <= columns
         assert connection.execute("SELECT sync_cursor FROM research_sources").fetchone()[0] == "9"
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
         assert connection.execute(
             "SELECT COUNT(*) FROM research_sync_runs"
         ).fetchone()[0] == 0
@@ -298,7 +298,7 @@ def test_v7_database_adds_project_paper_links_idempotently(tmp_path: Path) -> No
     init_db(db_path)
     init_db(db_path)
     with sqlite3.connect(db_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
         assert connection.execute(
             "SELECT COUNT(*) FROM project_research_items"
         ).fetchone()[0] == 0

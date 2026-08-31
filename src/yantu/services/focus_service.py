@@ -10,17 +10,20 @@ from typing import Any, Callable, Mapping
 from ..common import utc_now
 from ..database.repositories import FocusRepository, PlanningRepository, TaskRepository
 from .settings_service import SettingsService
+from .focus_habit_service import FocusHabitService
 
 
 class FocusService:
     def __init__(
         self, db_path: Path | str, *, now: Callable[[], datetime] | None = None,
         settings: SettingsService | None = None,
+        habits: FocusHabitService | None = None,
     ) -> None:
         self.repository = FocusRepository(db_path)
         self.tasks = TaskRepository(db_path)
         self.planning = PlanningRepository(db_path)
         self.settings = settings or SettingsService(db_path)
+        self.habits = habits
         self._now = now or (lambda: datetime.now().astimezone())
 
     def active(self) -> dict[str, Any] | None:
@@ -29,6 +32,8 @@ class FocusService:
             return None
         session = self._reconcile(session)
         self._ensure_task_started(session)
+        if self.habits:
+            session["habit"] = self.habits.session(str(session["id"]))
         return session
 
     def start(self, values: Mapping[str, Any]) -> dict[str, Any]:
@@ -37,7 +42,13 @@ class FocusService:
         session_type = str(values.get("session_type") or "focus")
         if session_type not in {"focus", "short_break", "long_break"}:
             raise ValueError("无效的会话类型")
-        mode = str(values.get("mode") or "pomodoro")
+        use_planning_profile = values.get("use_planning_profile") is True
+        planning_profile = self.planning.get_profile() if use_planning_profile else None
+        mode = (
+            "pomodoro" if planning_profile and planning_profile["use_pomodoro"] else
+            "free" if planning_profile else
+            str(values.get("mode") or "pomodoro")
+        )
         if mode not in {"pomodoro", "free"}:
             raise ValueError("无效的计时方式")
         task_id = str(values.get("task_id") or "") or None
@@ -46,16 +57,30 @@ class FocusService:
             not task or task.get("status") not in {"not_started", "in_progress", "waiting"}
         ):
             raise ValueError("请选择尚未完成的有效任务")
+        habit_profile_id = str(values.get("habit_profile_id") or "") or None
+        habit_profile = None
+        if habit_profile_id:
+            if session_type != "focus":
+                raise ValueError("休息会话不能启用专注习惯监测")
+            if not self.habits:
+                raise ValueError("当前运行环境未启用专注习惯监测")
+            habit_profile = self.habits.validate_profile(habit_profile_id)
         plan_block_id = str(values.get("plan_block_id") or "") or None
         if plan_block_id:
             block = self.repository.get_plan_block(plan_block_id)
             if not block or block.get("task_id") != task_id or block.get("block_type") != "focus":
                 raise ValueError("规划时间块与任务不匹配")
-        target = self._seconds(values.get("target_seconds", 0), allow_zero=mode == "free")
+        target_value = (
+            int(planning_profile["focus_minutes"]) * 60
+            if planning_profile and mode == "pomodoro"
+            else 0 if planning_profile
+            else values.get("target_seconds", 0)
+        )
+        target = self._seconds(target_value, allow_zero=mode == "free")
         if mode == "pomodoro" and target < 60:
             raise ValueError("倒计时至少为 1 分钟")
         now = self._now().isoformat()
-        return self.repository.create({
+        session = self.repository.create({
             "id": str(uuid.uuid4()), "task_id": task_id, "plan_block_id": plan_block_id,
             "parent_session_id": values.get("parent_session_id"), "session_type": session_type,
             "mode": mode, "status": "running", "target_seconds": target,
@@ -64,6 +89,9 @@ class FocusService:
             "time_entry_id": None, "note": str(values.get("note") or "").strip(),
             "created_at": now, "updated_at": now,
         }, activate_task=session_type == "focus")
+        if self.habits and habit_profile:
+            session["habit"] = self.habits.start_session(str(session["id"]), habit_profile)
+        return session
 
     def _ensure_task_started(self, session: Mapping[str, Any]) -> None:
         if session.get("session_type") != "focus" or not session.get("task_id"):
@@ -83,6 +111,8 @@ class FocusService:
         session = self._required(session_id)
         if session["status"] != "running":
             raise ValueError("只有运行中的会话可以暂停")
+        if self.habits:
+            self.habits.sample_session(session_id)
         elapsed = self._effective_elapsed(session)
         now = self._now().isoformat()
         result = self.repository.update(session_id, {
@@ -90,6 +120,8 @@ class FocusService:
             "pause_count": int(session["pause_count"]) + 1, "updated_at": now,
         })
         assert result is not None
+        if self.habits:
+            result["habit"] = self.habits.session(session_id)
         return result
 
     def resume(self, session_id: str) -> dict[str, Any]:
@@ -104,14 +136,23 @@ class FocusService:
             "updated_at": now_dt.isoformat(),
         })
         assert result is not None
+        if self.habits:
+            self.habits.reset_anchor(session_id)
+            result["habit"] = self.habits.session(session_id)
         return result
 
     def complete(self, session_id: str) -> dict[str, Any]:
         session = self._required(session_id)
         if session["status"] == "completed":
-            return {"session": session, "next_session": None}
+            return {
+                "session": session,
+                "next_session": None,
+                "habit_result": self.habits.session(session_id) if self.habits else None,
+            }
         if session["status"] == "cancelled":
             raise ValueError("已放弃的专注会话不能完成")
+        if self.habits:
+            self.habits.sample_session(session_id)
         elapsed = self._effective_elapsed(session)
         if session["mode"] == "pomodoro":
             elapsed = min(elapsed, int(session["target_seconds"]))
@@ -122,19 +163,28 @@ class FocusService:
             session_id, elapsed_seconds=elapsed, ended_at=now, updated_at=now,
             final_status="completed", time_entry=entry, break_session=next_session,
         )
-        return {"session": result, "next_session": self.repository.active() if next_session else None}
+        habit_result = self.habits.finish_session(session_id) if self.habits else None
+        return {
+            "session": result,
+            "next_session": self.repository.active() if next_session else None,
+            "habit_result": habit_result,
+        }
 
     def cancel(self, session_id: str, *, record_partial: bool = False) -> dict[str, Any]:
         session = self._required(session_id)
         if session["status"] == "cancelled":
-            return session
+            return {"session": session, "habit_result": self.habits.session(session_id) if self.habits else None}
+        if self.habits:
+            self.habits.sample_session(session_id)
         elapsed = self._effective_elapsed(session)
         now = self._now().isoformat()
         entry = self._time_entry(session, elapsed, now) if record_partial and session["session_type"] == "focus" and elapsed > 0 else None
-        return self.repository.finish(
+        result = self.repository.finish(
             session_id, elapsed_seconds=elapsed, ended_at=now, updated_at=now,
             final_status="cancelled", time_entry=entry, break_session=None,
         )
+        habit_result = self.habits.finish_session(session_id, cancelled=True) if self.habits else None
+        return {"session": result, "habit_result": habit_result}
 
     def history(self, *, start: Any = None, end: Any = None, task_id: str | None = None) -> list[dict[str, Any]]:
         return self.repository.history(
@@ -231,6 +281,8 @@ class FocusService:
             session["effective_elapsed_seconds"] = elapsed
             return session
         now = self._now().isoformat()
+        if self.habits:
+            self.habits.sample_session(str(session["id"]))
         result = self.repository.update(session["id"], {
             "status": "awaiting_action", "elapsed_seconds": target,
             "last_resumed_at": None, "updated_at": now,

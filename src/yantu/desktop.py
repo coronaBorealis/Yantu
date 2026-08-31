@@ -96,7 +96,7 @@ def run_desktop() -> int:
     _configure_windows_identity()
     paths = resolve_app_paths()
     paths.data_root.mkdir(parents=True, exist_ok=True)
-    app = create_app(paths.database)
+    app = create_app(paths.database, start_activity_monitor=True)
     app.config["INSTANCE_ID"] = str(uuid.uuid4())
     app.config["REQUEST_TOKEN"] = secrets.token_urlsafe(32)
 
@@ -121,12 +121,17 @@ def run_desktop() -> int:
         zoomable=True,
     )
     del window
-    webview.start(
-        debug=False,
-        private_mode=False,
-        storage_path=str(paths.data_root / "webview"),
-        icon=str(icon),
-    )
+    try:
+        webview.start(
+            debug=False,
+            private_mode=False,
+            storage_path=str(paths.data_root / "webview"),
+            icon=str(icon),
+        )
+    finally:
+        monitor = app.extensions.get("yantu_focus_habit_monitor")
+        if monitor:
+            monitor.stop()
     return 0
 
 

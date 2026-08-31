@@ -206,6 +206,31 @@ dialog,
 .focus-phase-rail { width:100%; display:grid; grid-template-columns:auto 1fr auto 1fr auto; align-items:center; gap:7px; color:#718d85; font:600 8px ui-monospace,monospace; letter-spacing:1px; text-transform:uppercase; }
 .focus-phase-rail i { height:1px; background:rgba(112,244,207,.2); }
 .focus-phase-rail .done,.focus-phase-rail .current { color:var(--focus-neon); }
+.focus-habit-card { width:100%; box-sizing:border-box; padding:11px 12px; border:1px solid rgba(112,244,207,.18); border-radius:10px; background:rgba(112,244,207,.045); text-align:left; }
+.focus-habit-card > div:first-child { display:flex; justify-content:space-between; gap:10px; }
+.focus-habit-card b { color:#e8fff8; font-size:11px; }
+.focus-habit-card span,.focus-habit-card small { color:#8fac9f; font-size:8px; }
+.focus-habit-card dl { margin:9px 0 6px; display:grid; grid-template-columns:repeat(4,1fr); gap:5px; }
+.focus-habit-card dl div { display:grid; gap:2px; }
+.focus-habit-card dt { color:#78988e; font-size:7px; }
+.focus-habit-card dd { margin:0; color:var(--focus-neon); font:600 10px ui-monospace,"Cascadia Code",monospace; }
+.focus-habit-card.unavailable { border-color:rgba(255,190,110,.25); }
+.focus-habit-card.attention { border-color:rgba(255,190,110,.42); background:rgba(255,190,110,.07); }
+.focus-helper-row { display:flex; align-items:center; justify-content:space-between; gap:10px; color:#91aaa3; font-size:9px; }
+.focus-helper-row button { flex:0 0 auto; border:0; padding:4px 0; background:transparent; color:var(--focus-neon); font:inherit; font-weight:700; cursor:pointer; }
+.focus-shortcuts { width:100%; display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:8px 12px; color:#6f8b83; font-size:8px; }
+.focus-shortcuts span { display:flex; align-items:center; gap:4px; }
+.focus-shortcuts kbd { border:1px solid rgba(112,244,207,.18); border-bottom-color:rgba(112,244,207,.35); border-radius:4px; padding:2px 5px; background:rgba(255,255,255,.04); color:#a9c3bb; font:600 8px ui-monospace,"Cascadia Code",monospace; }
+.habit-settings { margin-top:22px; padding-top:20px; border-top:1px solid var(--border); }
+.habit-profile-list { display:grid; gap:7px; margin:10px 0 15px; }
+.habit-profile-list article { display:grid; grid-template-columns:1fr auto; gap:8px; align-items:center; border:1px solid var(--border); border-radius:10px; padding:6px 10px; background:var(--surface-strong); }
+.habit-profile-list article > button:first-child { display:grid; gap:3px; text-align:left; border:0; background:transparent; color:var(--text); cursor:pointer; }
+.habit-profile-list article span { color:var(--muted); font-size:10px; }
+.habit-longterm-summary { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:12px 0; }
+.habit-longterm-summary div { padding:10px; border-radius:10px; background:var(--accent-soft); }
+.habit-longterm-summary b,.habit-longterm-summary span { display:block; }
+.habit-longterm-summary b { color:var(--accent); font-size:15px; }
+.habit-longterm-summary span,.habit-longterm-summary p { color:var(--muted); font-size:9px; margin:3px 0 0; }
 @keyframes focus-pulse { 0%,100%{opacity:.55;transform:scale(.9)} 50%{opacity:1;transform:scale(1.08)} }
 @media (prefers-reduced-motion: reduce) { .focus-head i.live,.focus-launch span { animation:none!important; } .focus-panel,.focus-orbit { transition:none!important; } }
 
@@ -238,3 +263,4 @@ dialog,
   .planning-dialog .dialog-actions > span { display:none; }
   .planning-dialog .dialog-actions button { padding:10px 4px; font-size:11px; }
 }
+@media (max-width:390px){.focus-shortcuts{display:none}.habit-longterm-summary{grid-template-columns:1fr}}

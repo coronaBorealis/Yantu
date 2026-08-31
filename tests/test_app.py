@@ -38,6 +38,18 @@ class YantuApiTests(unittest.TestCase):
         self.assertIn("idx_tasks_domain_status", indexes)
         self.assertIn("idx_tasks_due_date", indexes)
 
+    def test_primary_interaction_contract_is_exposed(self):
+        html = self.client.get("/").get_data(as_text=True)
+        script = self.client.get("/app.js").get_data(as_text=True)
+        styles = self.client.get("/styles.css").get_data(as_text=True)
+        self.assertIn('aria-label="专注计时器" aria-live="polite"', html)
+        self.assertIn("先新建一个任务", script)
+        self.assertIn("Ctrl + Enter", script)
+        self.assertIn("yantu.focus.draft.v1", script)
+        self.assertIn("use_planning_profile", script)
+        self.assertIn("save-planning-profile", html)
+        self.assertIn(".sidebar nav", styles)
+
     def test_task_crud_and_all_mvp_fields(self):
         payload = {
             "title": "准备组会汇报",
@@ -135,7 +147,7 @@ class YantuApiTests(unittest.TestCase):
     def test_backup_export_and_import(self):
         self.client.post("/api/tasks", json={"title": "课程项目", "domain": "course"})
         backup = self.client.get("/api/export").get_json()
-        self.assertEqual(backup["version"], 8)
+        self.assertEqual(backup["version"], 9)
         self.assertEqual(len(backup["tasks"]), 1)
 
         other_db = Path(self.temp_dir.name) / "restored.db"

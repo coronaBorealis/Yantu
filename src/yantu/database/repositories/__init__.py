@@ -8,7 +8,8 @@ from .appearance_repository import AppearanceRepository
 from .planning_repository import PlanningRepository
 from .settings_repository import SettingsRepository
 from .focus_repository import FocusRepository
+from .focus_habit_repository import FocusHabitRepository
 from .research_repository import ResearchRepository
 from .planning_preference_repository import TaskPlanningPreferenceRepository
 
-__all__ = ["ProjectRepository", "TaskRepository", "TimeEntryRepository", "ScheduleRepository", "AppearanceRepository", "PlanningRepository", "SettingsRepository", "FocusRepository", "ResearchRepository", "TaskPlanningPreferenceRepository"]
+__all__ = ["ProjectRepository", "TaskRepository", "TimeEntryRepository", "ScheduleRepository", "AppearanceRepository", "PlanningRepository", "SettingsRepository", "FocusRepository", "FocusHabitRepository", "ResearchRepository", "TaskPlanningPreferenceRepository"]

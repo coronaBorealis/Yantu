@@ -11,7 +11,7 @@ from ..common import utc_now
 from .config import DEFAULT_DB_PATH
 from .constants import DOMAINS, PRIORITIES, STATUSES
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def _column_names(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -285,6 +285,61 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_focus_one_active
                 ON focus_sessions ((1))
                 WHERE status IN ('running','paused','awaiting_action');
+
+            CREATE TABLE IF NOT EXISTS focus_habit_profiles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                allowed_apps_json TEXT NOT NULL DEFAULT '[]',
+                idle_threshold_seconds INTEGER NOT NULL DEFAULT 60
+                    CHECK(idle_threshold_seconds BETWEEN 15 AND 600),
+                switch_warning_count INTEGER NOT NULL DEFAULT 8
+                    CHECK(switch_warning_count BETWEEN 1 AND 100),
+                enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS focus_habit_sessions (
+                session_id TEXT PRIMARY KEY REFERENCES focus_sessions(id) ON DELETE CASCADE,
+                profile_id TEXT REFERENCES focus_habit_profiles(id) ON DELETE SET NULL,
+                profile_name TEXT NOT NULL,
+                allowed_apps_json TEXT NOT NULL DEFAULT '[]',
+                idle_threshold_seconds INTEGER NOT NULL,
+                switch_warning_count INTEGER NOT NULL,
+                status TEXT NOT NULL
+                    CHECK(status IN ('monitoring','completed','cancelled','unavailable')),
+                platform TEXT NOT NULL DEFAULT '',
+                active_seconds INTEGER NOT NULL DEFAULT 0 CHECK(active_seconds >= 0),
+                idle_seconds INTEGER NOT NULL DEFAULT 0 CHECK(idle_seconds >= 0),
+                distraction_seconds INTEGER NOT NULL DEFAULT 0 CHECK(distraction_seconds >= 0),
+                switch_count INTEGER NOT NULL DEFAULT 0 CHECK(switch_count >= 0),
+                violation_count INTEGER NOT NULL DEFAULT 0 CHECK(violation_count >= 0),
+                quality_score INTEGER NOT NULL DEFAULT 100 CHECK(quality_score BETWEEN 0 AND 100),
+                last_process_name TEXT,
+                last_sampled_at TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                unavailable_reason TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS focus_app_usage (
+                session_id TEXT NOT NULL REFERENCES focus_sessions(id) ON DELETE CASCADE,
+                process_name TEXT NOT NULL,
+                is_allowed INTEGER NOT NULL CHECK(is_allowed IN (0,1)),
+                active_seconds INTEGER NOT NULL DEFAULT 0 CHECK(active_seconds >= 0),
+                idle_seconds INTEGER NOT NULL DEFAULT 0 CHECK(idle_seconds >= 0),
+                sample_count INTEGER NOT NULL DEFAULT 0 CHECK(sample_count >= 0),
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                PRIMARY KEY(session_id, process_name)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_focus_habit_profiles_enabled
+                ON focus_habit_profiles(enabled, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_focus_habit_sessions_status
+                ON focus_habit_sessions(status, started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_focus_app_usage_session
+                ON focus_app_usage(session_id, active_seconds DESC);
 
             CREATE TABLE IF NOT EXISTS task_planning_preferences (
                 task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,

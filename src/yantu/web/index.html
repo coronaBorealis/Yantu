@@ -15,8 +15,8 @@
       if(cached){document.documentElement.dataset.theme=cached.resolved_mode||cached.mode||'light';document.documentElement.dataset.preset=cached.preset||'forest'}
     } catch (_) {}
   </script>
-  <link rel="stylesheet" href="styles.css?v=20260811.3">
-  <link rel="stylesheet" href="theme.css?v=20260819.1">
+  <link rel="stylesheet" href="styles.css?v=20260831.1">
+  <link rel="stylesheet" href="theme.css?v=20260831.1">
 </head>
 <body>
   <div class="app-shell">
@@ -109,6 +109,16 @@
             <label class="switch-row"><span><b>专注后自动休息</b><small>休息结束后仍等待你确认</small></span><input type="checkbox" id="setting-auto-break"></label>
             <label class="field"><span>提示音音量</span><input type="range" id="setting-volume" min="0" max="100"><output id="setting-volume-output"></output></label>
             <button type="button" class="secondary-btn" id="open-planning-settings">调整工作与休息时长</button>
+            <div class="habit-settings">
+              <div><h3>专注习惯方案</h3><p class="settings-lead">仅统计前台应用名称与活跃时长，不记录按键内容、窗口标题、网址或截图。</p></div>
+              <div id="habit-capability" class="form-hint"></div>
+              <div id="habit-longterm-summary" class="habit-longterm-summary"></div>
+              <div id="habit-profile-list" class="habit-profile-list"></div>
+              <input type="hidden" id="habit-profile-id">
+              <div class="form-grid"><label class="field"><span>方案名称</span><input id="habit-name" maxlength="60" placeholder="例如：代码深潜"></label><label class="field"><span>目标应用（逗号分隔）</span><input id="habit-apps" placeholder="code.exe, chrome.exe"></label></div>
+              <div class="form-grid"><label class="field"><span>无操作多久视为空闲（秒）</span><input type="number" id="habit-idle" min="15" max="600" value="60"></label><label class="field"><span>应用切换提醒阈值</span><input type="number" id="habit-switch-warning" min="1" max="100" value="8"></label></div>
+              <div class="settings-actions"><button type="button" class="secondary-btn" id="habit-current-app">加入当前应用</button><button type="button" class="secondary-btn" id="habit-new">新建方案</button><span></span><button type="button" class="primary-btn" id="habit-save">保存方案</button></div>
+            </div>
           </section>
           <section data-settings-page="ai" class="hidden">
             <h3>DeepSeek AI</h3><p class="settings-lead" id="ai-settings-status">正在读取安全凭据状态…</p>
@@ -224,12 +234,12 @@
         <div class="form-grid three"><label class="field"><span>几轮后长休息</span><input type="number" id="plan-long-after" min="2" max="8"></label><label class="field"><span>最长连续专注</span><input type="number" id="plan-max-continuous" min="25" max="240"><small>分钟</small></label><label class="field"><span>课程前后缓冲</span><input type="number" id="plan-buffer" min="0" max="60"><small>分钟</small></label></div>
       </div>
       <div id="planning-preview" class="planning-preview"><div class="empty"><strong>先生成一个可检查的时间表</strong>会综合任务优先级、Deadline、课程占用和休息偏好。</div></div>
-      <div class="dialog-actions"><span></span><button type="button" class="secondary-btn" id="cancel-planning">取消</button><button type="button" class="secondary-btn" id="preview-planning">生成预览</button><button type="submit" class="primary-btn hidden" id="confirm-planning">确认时间表</button></div>
+      <div class="dialog-actions"><span></span><button type="button" class="secondary-btn" id="cancel-planning">取消</button><button type="button" class="secondary-btn" id="save-planning-profile">仅保存偏好</button><button type="button" class="secondary-btn" id="preview-planning">保存并生成预览</button><button type="submit" class="primary-btn hidden" id="confirm-planning">确认时间表</button></div>
     </form>
   </dialog>
-  <section id="focus-panel" class="focus-panel hidden" aria-label="专注计时器"></section>
+  <section id="focus-panel" class="focus-panel hidden" aria-label="专注计时器" aria-live="polite"></section>
   <div id="context-menu" class="context-menu hidden" role="menu" aria-label="快捷操作"></div>
   <div class="toast" id="toast" role="status"><span id="toast-text"></span><button id="toast-action" class="hidden"></button></div>
-  <script src="app.js?v=20260820.3"></script>
+  <script src="app.js?v=20260831.2"></script>
 </body>
 </html>
