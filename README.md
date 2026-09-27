@@ -51,6 +51,8 @@ Yantu（研途）是一款面向研究生的 Windows 本地时间管理应用。
 2. 双击 `Yantu-Setup-0.2.1-x64.exe`，按向导安装。
 3. 从桌面或开始菜单打开 **Yantu 研途**。
 
+当前下载包对应此前发布的 v0.2.1 构建；上方界面预览展示的是仓库最新源码。要体验本次新增的功能，请先按下方“从源码运行”启动，更新后的安装包会单独发布。
+
 安装版支持 64 位 Windows 10/11，按当前用户安装，不要求管理员权限。卸载应用不会删除 `%LOCALAPPDATA%\Yantu` 中的任务、课表和设置；建议仍定期从设置中心导出 JSON 备份。
 
 桌面窗口使用系统的 Microsoft Edge WebView2 Runtime。Windows 10/11 通常已包含该组件；若启动时提示缺失，请从 [Microsoft WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) 安装 Evergreen Runtime。
