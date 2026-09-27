@@ -41,6 +41,17 @@ class FocusRepository:
         columns = list(record)
         try:
             with database(self.db_path) as connection:
+                if record.get("session_type") == "focus" and record.get("task_id"):
+                    task = connection.execute("""
+                        SELECT t.title, t.domain, p.name AS project_name
+                        FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+                        WHERE t.id = ?
+                    """, (record["task_id"],)).fetchone()
+                    if task:
+                        record = {**record, "task_title_snapshot": task["title"],
+                                  "task_domain_snapshot": task["domain"],
+                                  "project_name_snapshot": task["project_name"]}
+                        columns = list(record)
                 connection.execute(
                     f"INSERT INTO focus_sessions ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
                     [record[key] for key in columns],
@@ -116,7 +127,7 @@ class FocusRepository:
                     time_entry,
                 )
                 task = connection.execute(
-                    """SELECT actual_minutes, estimated_minutes, progress, status
+                    """SELECT actual_minutes, estimated_minutes, progress, status, task_kind
                        FROM tasks WHERE id = ?""",
                     (time_entry["task_id"],),
                 ).fetchone()
@@ -124,7 +135,11 @@ class FocusRepository:
                     actual = max(0, int(task[0] or 0) + int(time_entry["duration"]))
                     estimated = max(0, int(task[1] or 0))
                     progress = max(0, int(task[2] or 0))
-                    if estimated:
+                    if task[4] == "free_learning":
+                        baseline = max(1, estimated)
+                        if actual >= baseline:
+                            estimated = baseline + ((actual - baseline) // 60 + 1) * 60
+                    elif estimated:
                         progress = max(progress, min(99, int(actual * 100 / estimated)))
                     status = (
                         "in_progress"
@@ -134,13 +149,16 @@ class FocusRepository:
                     connection.execute(
                         """
                         UPDATE tasks
-                        SET actual_minutes = ?, actual_hours = ?, progress = ?,
+                        SET actual_minutes = ?, actual_hours = ?,
+                            estimated_minutes = ?, estimated_hours = ?, progress = ?,
                             status = ?, completed_at = NULL, updated_at = ?
                         WHERE id = ?
                         """,
                         (
                             actual,
                             actual / 60.0,
+                            estimated,
+                            estimated / 60.0,
                             progress,
                             status,
                             updated_at,
@@ -161,10 +179,13 @@ class FocusRepository:
                 """
                 UPDATE focus_sessions
                 SET status = ?, elapsed_seconds = ?, ended_at = ?,
-                    last_resumed_at = NULL, time_entry_id = ?, updated_at = ?
+                    last_resumed_at = NULL, time_entry_id = ?, archived = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (final_status, elapsed_seconds, ended_at, time_entry_id, updated_at, session_id),
+                (final_status, elapsed_seconds, ended_at, time_entry_id,
+                 int(session["session_type"] == "focus" and elapsed_seconds > 0
+                     and (final_status == "completed" or time_entry_id is not None)),
+                 updated_at, session_id),
             )
             if break_session:
                 columns = list(break_session)
@@ -197,7 +218,8 @@ class FocusRepository:
         with database(self.db_path) as connection:
             rows = connection.execute(
                 f"""
-                SELECT f.*, t.title AS task_title, t.domain AS task_domain
+                SELECT f.*, COALESCE(f.task_title_snapshot, t.title) AS task_title,
+                       COALESCE(f.task_domain_snapshot, t.domain) AS task_domain
                 FROM focus_sessions f
                 LEFT JOIN tasks t ON t.id = f.task_id
                 {where}
@@ -219,9 +241,13 @@ class FocusRepository:
                     "id", "task_id", "plan_block_id", "parent_session_id", "session_type",
                     "mode", "status", "target_seconds", "elapsed_seconds", "paused_seconds",
                     "pause_count", "started_at", "last_resumed_at", "ended_at", "time_entry_id",
-                    "note", "created_at", "updated_at",
+                    "archived", "task_title_snapshot", "task_domain_snapshot",
+                    "project_name_snapshot", "note", "created_at", "updated_at",
                 }
                 record = {key: source.get(key) for key in allowed}
+                record["archived"] = int(bool(source.get("archived", source.get("status") == "completed"))
+                                          and source.get("session_type") == "focus"
+                                          and int(source.get("elapsed_seconds") or 0) > 0)
                 # A backup restores focus history after tasks, but session parents and
                 # old TimeEntry identifiers are intentionally not part of that ledger.
                 record["parent_session_id"] = None

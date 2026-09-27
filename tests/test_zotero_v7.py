@@ -93,7 +93,7 @@ def test_v6_source_table_upgrades_to_current_without_losing_source(tmp_path: Pat
         columns = {row[1] for row in connection.execute("PRAGMA table_info(research_sources)")}
         assert {"access_mode", "base_url", "server_id", "auto_sync"} <= columns
         assert connection.execute("SELECT sync_cursor FROM research_sources").fetchone()[0] == "9"
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 13
         assert connection.execute(
             "SELECT COUNT(*) FROM research_sync_runs"
         ).fetchone()[0] == 0
@@ -298,7 +298,7 @@ def test_v7_database_adds_project_paper_links_idempotently(tmp_path: Path) -> No
     init_db(db_path)
     init_db(db_path)
     with sqlite3.connect(db_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 13
         assert connection.execute(
             "SELECT COUNT(*) FROM project_research_items"
         ).fetchone()[0] == 0
@@ -310,6 +310,8 @@ def test_collection_preview_search_and_project_import_are_idempotent(tmp_path: P
         zotero_item("PAPER001", title="Photon counting review"),
         zotero_item("PAPER002", title="SPAD imaging"),
     ]
+    papers[0]["data"]["collections"] = ["ROOT1234"]
+    papers[1]["data"]["collections"] = ["CHILD123"]
 
     def transport(request, timeout):
         calls.append(request.full_url)
@@ -371,6 +373,8 @@ def test_collection_preview_search_and_project_import_are_idempotent(tmp_path: P
         "mode": "collection",
         "collection_key": "ROOT1234",
         "item_keys": ["PAPER001", "PAPER002"],
+        "organize_by_collection": True,
+        "include_subcollections": True,
     }
     first = client.post(f"/api/research/projects/{project['id']}/imports", json=payload)
     second = client.post(f"/api/research/projects/{project['id']}/imports", json=payload)
@@ -381,6 +385,37 @@ def test_collection_preview_search_and_project_import_are_idempotent(tmp_path: P
         f"/api/research/projects/{project['id']}/items"
     ).get_json()["items"]
     assert {item["external_key"] for item in linked} == {"PAPER001", "PAPER002"}
+    folders = client.get(
+        f"/api/research/projects/{project['id']}/folders"
+    ).get_json()["folders"]
+    assert len(folders) == 2
+    root = next(folder for folder in folders if folder["source_collection_key"] == "ROOT1234")
+    child = next(folder for folder in folders if folder["source_collection_key"] == "CHILD123")
+    assert child["parent_id"] == root["id"]
+    assert client.put(f"/api/research/projects/{project['id']}/folders/{root['id']}",
+                      json={"name": "本地重命名"}).status_code == 400
+    by_key = {item["external_key"]: item for item in linked}
+    assert root["id"] in by_key["PAPER001"]["folder_ids"]
+    assert child["id"] in by_key["PAPER002"]["folder_ids"]
+    child_only = client.post(f"/api/research/projects/{project['id']}/imports", json={
+        **payload, "collection_key": "CHILD123", "item_keys": ["PAPER002"],
+        "include_subcollections": False,
+    })
+    assert child_only.status_code == 201
+    folders_after = child_only.get_json()["folders"]
+    assert len(folders_after) == 2
+    assert next(folder for folder in folders_after if folder["id"] == child["id"])["parent_id"] == root["id"]
+    conflicting_project = client.post(
+        "/api/projects", json={"name": "同名类目项目", "category": "科研"}
+    ).get_json()["project"]
+    client.post(f"/api/research/projects/{conflicting_project['id']}/folders",
+                json={"name": "激光雷达"})
+    collision = client.post(
+        f"/api/research/projects/{conflicting_project['id']}/imports", json=payload
+    )
+    assert collision.status_code == 400
+    assert client.get(f"/api/research/projects/{conflicting_project['id']}/items").get_json()["items"] == []
+    assert len(client.get(f"/api/research/projects/{conflicting_project['id']}/folders").get_json()["folders"]) == 1
     assert client.get("/api/research/inbox").get_json()["items"] == []
     assert any("q=SPAD" in url for url in calls)
 

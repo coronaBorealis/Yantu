@@ -216,6 +216,15 @@ dialog,
 .focus-habit-card dd { margin:0; color:var(--focus-neon); font:600 10px ui-monospace,"Cascadia Code",monospace; }
 .focus-habit-card.unavailable { border-color:rgba(255,190,110,.25); }
 .focus-habit-card.attention { border-color:rgba(255,190,110,.42); background:rgba(255,190,110,.07); }
+.focus-habit-card dl.basic { grid-template-columns:repeat(3,1fr); }
+.focus-app-breakdown { margin:9px 0 7px; padding-top:7px; border-top:1px solid rgba(112,244,207,.12); display:grid !important; gap:5px; }
+.focus-app-breakdown-head,.focus-app-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.focus-app-breakdown-head b { font-size:8px; letter-spacing:.08em; text-transform:uppercase; }
+.focus-app-row > span { min-width:0; display:flex; align-items:center; gap:6px; color:#b7cec5; font-size:9px; }
+.focus-app-row > span i { width:5px; height:5px; border-radius:50%; flex:0 0 auto; background:var(--focus-neon); box-shadow:0 0 7px rgba(112,244,207,.45); }
+.focus-app-row > span i.outside { background:#ffb36f; box-shadow:0 0 7px rgba(255,179,111,.35); }
+.focus-app-row > b { font:500 9px ui-monospace,"Cascadia Code",monospace; white-space:nowrap; }
+.focus-app-empty { margin:8px 0 6px; color:#718d82; font-size:8px; }
 .focus-helper-row { display:flex; align-items:center; justify-content:space-between; gap:10px; color:#91aaa3; font-size:9px; }
 .focus-helper-row button { flex:0 0 auto; border:0; padding:4px 0; background:transparent; color:var(--focus-neon); font:inherit; font-weight:700; cursor:pointer; }
 .focus-shortcuts { width:100%; display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:8px 12px; color:#6f8b83; font-size:8px; }

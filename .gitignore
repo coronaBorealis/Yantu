@@ -22,6 +22,7 @@ venv/
 data/runtime.json
 data/appearance.json
 data/appearance/
+data/archive/
 *.log
 
 # Local/offline dependencies and build output

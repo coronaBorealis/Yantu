@@ -86,7 +86,7 @@ def test_schema_v5_migration_is_idempotent_and_preserves_v4_data(tmp_path: Path)
     with sqlite3.connect(db_path) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
         assert {"focus_sessions", "app_settings"} <= tables
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 13
         assert connection.execute("SELECT title FROM tasks WHERE id='kept'").fetchone()[0] == "阅读论文"
 
 
@@ -304,7 +304,7 @@ def test_focus_api_history_stats_and_backup_exclude_active_session(tmp_path: Pat
     stats = client.get("/api/focus/stats?start=2026-01-01&end=2026-12-31").get_json()["stats"]
     assert stats["focus_minutes"] == 0
     backup = client.get("/api/export").get_json()
-    assert backup["version"] == 9 and "focus_sessions" in backup and "focus_habits" in backup and "settings" in backup
+    assert backup["version"] == 13 and "focus_sessions" in backup and "focus_habits" in backup and "settings" in backup
     assert "api_key" not in json.dumps(backup).lower()
 
 

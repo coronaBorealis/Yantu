@@ -6,6 +6,7 @@ from flask import Blueprint, jsonify, request
 
 from ..services.focus_service import FocusService
 from ..services.focus_habit_service import FocusHabitService
+from ..services.focus_analytics_service import FocusAnalyticsService
 
 
 def create_focus_blueprint(
@@ -16,6 +17,7 @@ def create_focus_blueprint(
     blueprint = Blueprint("focus", __name__, url_prefix="/api/focus")
     habits = habit_service or (service.habits if service else None) or FocusHabitService(db_path)
     focus = service or FocusService(db_path, habits=habits)
+    analytics = FocusAnalyticsService(db_path)
 
     @blueprint.get("/active")
     def active():
@@ -91,6 +93,12 @@ def create_focus_blueprint(
     @blueprint.get("/stats")
     def stats():
         return jsonify({"stats": focus.stats(start=request.args.get("start"), end=request.args.get("end"))})
+
+    @blueprint.get("/analytics")
+    def analytics_report():
+        return jsonify({"analytics": analytics.report(
+            start=request.args.get("start"), end=request.args.get("end")
+        )})
 
     @blueprint.errorhandler(ValueError)
     def invalid(error: ValueError):

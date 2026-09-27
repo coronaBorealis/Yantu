@@ -51,6 +51,11 @@ def create_research_blueprint(
     def items_list():
         return jsonify({"items": service.list_items(request.args.get("source_id") or None)})
 
+    @blueprint.post("/items/<item_id>/quick-task")
+    def quick_reading_task(item_id: str):
+        result = service.quick_reading_task(item_id, request.get_json(silent=True) or {})
+        return jsonify(result), 200 if result["reused"] else 201
+
     @blueprint.post("/items")
     def items_save():
         return jsonify({"item": service.save_item(request.get_json(silent=True) or {})}), 201
@@ -82,6 +87,27 @@ def create_research_blueprint(
     @blueprint.get("/projects/<project_id>/items")
     def project_items(project_id: str):
         return jsonify({"items": service.list_project_items(project_id)})
+
+    @blueprint.get("/projects/<project_id>/folders")
+    def project_folders(project_id: str):
+        return jsonify({"folders": service.list_folders(project_id)})
+
+    @blueprint.post("/projects/<project_id>/folders")
+    def folder_create(project_id: str):
+        return jsonify({"folder": service.create_folder(
+            project_id, request.get_json(silent=True) or {}
+        )}), 201
+
+    @blueprint.put("/projects/<project_id>/folders/<folder_id>")
+    def folder_rename(project_id: str, folder_id: str):
+        return jsonify({"folder": service.rename_folder(
+            project_id, folder_id, request.get_json(silent=True) or {}
+        )})
+
+    @blueprint.post("/projects/<project_id>/folders/<folder_id>/items/<item_id>")
+    def folder_item_add(project_id: str, folder_id: str, item_id: str):
+        service.add_folder_item(project_id, folder_id, item_id)
+        return "", 204
 
     @blueprint.post("/projects/<project_id>/imports")
     def project_import_confirm(project_id: str):

@@ -58,6 +58,7 @@ class FocusService:
         ):
             raise ValueError("请选择尚未完成的有效任务")
         habit_profile_id = str(values.get("habit_profile_id") or "") or None
+        monitor_apps = values.get("monitor_apps") is not False
         habit_profile = None
         if habit_profile_id:
             if session_type != "focus":
@@ -89,8 +90,10 @@ class FocusService:
             "time_entry_id": None, "note": str(values.get("note") or "").strip(),
             "created_at": now, "updated_at": now,
         }, activate_task=session_type == "focus")
-        if self.habits and habit_profile:
-            session["habit"] = self.habits.start_session(str(session["id"]), habit_profile)
+        if self.habits and session_type == "focus" and monitor_apps:
+            session["habit"] = self.habits.start_session(
+                str(session["id"]), habit_profile
+            )
         return session
 
     def _ensure_task_started(self, session: Mapping[str, Any]) -> None:
@@ -154,7 +157,8 @@ class FocusService:
         if self.habits:
             self.habits.sample_session(session_id)
         elapsed = self._effective_elapsed(session)
-        if session["mode"] == "pomodoro":
+        task = self.tasks.get(str(session["task_id"])) if session.get("task_id") else None
+        if session["mode"] == "pomodoro" and (not task or task.get("task_kind") != "free_learning"):
             elapsed = min(elapsed, int(session["target_seconds"]))
         now = self._now().isoformat()
         entry = self._time_entry(session, elapsed, now) if session["session_type"] == "focus" and elapsed > 0 else None
@@ -206,7 +210,7 @@ class FocusService:
             item for item in sessions
             if item["session_type"] == "focus"
             and int(item.get("elapsed_seconds") or 0) > 0
-            and (item["status"] == "completed" or item.get("time_entry_id"))
+            and int(item.get("archived") or 0) == 1
         ]
         by_day_seconds: dict[str, int] = defaultdict(int)
         by_task_seconds: dict[str, int] = defaultdict(int)
@@ -273,9 +277,29 @@ class FocusService:
         return self.repository.import_finished(values if isinstance(values, list) else [])
 
     def _reconcile(self, session: dict[str, Any]) -> dict[str, Any]:
-        if session["status"] != "running" or session["mode"] == "free":
+        if session["status"] != "running":
             return session
         elapsed = self._effective_elapsed(session)
+        task = self.tasks.get(str(session["task_id"])) if session.get("session_type") == "focus" and session.get("task_id") else None
+        if task and task.get("task_kind") == "free_learning":
+            self._extend_learning_estimate(task, elapsed)
+            if session["mode"] == "free":
+                session["effective_elapsed_seconds"] = elapsed
+                return session
+            target = int(session["target_seconds"])
+            if elapsed >= target:
+                extension_count = (elapsed - target) // 3600 + 1
+                result = self.repository.update(str(session["id"]), {
+                    "target_seconds": target + extension_count * 3600,
+                    "updated_at": self._now().isoformat(),
+                })
+                assert result is not None
+                result["effective_elapsed_seconds"] = elapsed
+                return result
+            session["effective_elapsed_seconds"] = elapsed
+            return session
+        if session["mode"] == "free":
+            return session
         target = int(session["target_seconds"])
         if elapsed < target:
             session["effective_elapsed_seconds"] = elapsed
@@ -289,6 +313,18 @@ class FocusService:
         })
         assert result is not None
         return result
+
+    def _extend_learning_estimate(self, task: Mapping[str, Any], elapsed_seconds: int) -> None:
+        current = max(1, int(task.get("estimated_minutes") or 60))
+        accumulated = int(task.get("actual_minutes") or 0) + elapsed_seconds // 60
+        if accumulated < current:
+            return
+        next_limit = current + ((accumulated - current) // 60 + 1) * 60
+        self.tasks.update(str(task["id"]), {
+            "estimated_minutes": next_limit,
+            "estimated_hours": next_limit / 60,
+            "updated_at": self._now().isoformat(),
+        })
 
     def _required(self, session_id: str) -> dict[str, Any]:
         session = self.repository.get(session_id)

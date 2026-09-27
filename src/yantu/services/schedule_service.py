@@ -7,25 +7,30 @@ from typing import Any, Mapping
 
 from ..common import utc_now
 from ..database.repositories.schedule_repository import ScheduleRepository
+from ..database.repositories.task_repository import TaskRepository
 
 
 DEFAULT_PERIODS = [
     {"period": 1, "start_time": "08:00", "end_time": "08:45"},
-    {"period": 2, "start_time": "08:55", "end_time": "09:40"},
-    {"period": 3, "start_time": "10:00", "end_time": "10:45"},
-    {"period": 4, "start_time": "10:55", "end_time": "11:40"},
-    {"period": 5, "start_time": "14:00", "end_time": "14:45"},
-    {"period": 6, "start_time": "14:55", "end_time": "15:40"},
-    {"period": 7, "start_time": "16:00", "end_time": "16:45"},
-    {"period": 8, "start_time": "16:55", "end_time": "17:40"},
-    {"period": 9, "start_time": "19:00", "end_time": "19:45"},
-    {"period": 10, "start_time": "19:55", "end_time": "20:40"},
+    {"period": 2, "start_time": "08:50", "end_time": "09:35"},
+    {"period": 3, "start_time": "09:50", "end_time": "10:35"},
+    {"period": 4, "start_time": "10:40", "end_time": "11:25"},
+    {"period": 5, "start_time": "11:30", "end_time": "12:15"},
+    {"period": 6, "start_time": "14:00", "end_time": "14:45"},
+    {"period": 7, "start_time": "14:50", "end_time": "15:35"},
+    {"period": 8, "start_time": "15:50", "end_time": "16:35"},
+    {"period": 9, "start_time": "16:40", "end_time": "17:25"},
+    {"period": 10, "start_time": "17:30", "end_time": "18:15"},
+    {"period": 11, "start_time": "19:00", "end_time": "19:45"},
+    {"period": 12, "start_time": "19:50", "end_time": "20:35"},
+    {"period": 13, "start_time": "20:40", "end_time": "21:25"},
 ]
 
 
 class ScheduleService:
     def __init__(self, db_path: Path | str) -> None:
         self.repository = ScheduleRepository(db_path)
+        self.tasks = TaskRepository(db_path)
 
     def list_semesters(self) -> list[dict[str, Any]]:
         return self.repository.list_semesters()
@@ -62,6 +67,8 @@ class ScheduleService:
             raise ValueError("学期名称不能为空")
         start = self._date(values.get("start_date"), "学期开始日期")
         end = self._date(values.get("end_date"), "学期结束日期")
+        if date.fromisoformat(start).isoweekday() != 1:
+            raise ValueError("教学第 1 周第一天必须是星期一")
         if end < start:
             raise ValueError("学期结束日期不能早于开始日期")
         periods = values.get("periods") or DEFAULT_PERIODS
@@ -88,6 +95,7 @@ class ScheduleService:
         return {
             "id": semester_id or str(values.get("id") or uuid.uuid4()),
             "name": name,
+            "stage_label": str(values.get("stage_label") or "").strip()[:24],
             "start_date": start,
             "end_date": end,
             "timezone": str(values.get("timezone") or "Asia/Shanghai"),
@@ -140,6 +148,8 @@ class ScheduleService:
             "end_week": end_week,
             "week_pattern": pattern,
             "custom_weeks": custom_weeks,
+            "teacher_override": str(values.get("teacher_override") or "").strip(),
+            "location_override": str(values.get("location_override") or "").strip(),
         }
 
     def create_course(
@@ -230,6 +240,7 @@ class ScheduleService:
                         events.append(
                             {
                                 "id": f"{meeting['id']}:{cursor.isoformat()}",
+                                "source_type": "course",
                                 "meeting_id": meeting["id"],
                                 "course_id": meeting["course_id"],
                                 "semester_id": meeting["semester_id"],
@@ -246,7 +257,56 @@ class ScheduleService:
                             }
                         )
                 cursor += timedelta(days=1)
+        events.extend(self._task_time_events(start_date, end_date))
         return sorted(events, key=lambda item: (item["date"], item["start_time"], item["title"]))
+
+    def _task_time_events(self, start_date: date, end_date: date) -> list[dict[str, Any]]:
+        colors = {
+            "research": "#5b759d",
+            "course": "#b17b42",
+            "personal": "#7a6aa6",
+            "inbox": "#66736d",
+        }
+        events: list[dict[str, Any]] = []
+        for task in self.tasks.list():
+            if task.get("schedule_mode") != "time_block":
+                continue
+            if task.get("status") in {"completed", "cancelled"}:
+                continue
+            try:
+                first = date.fromisoformat(str(task.get("scheduled_date") or ""))
+                start_time = self._time(task.get("scheduled_start_time"), "开始时间")
+                end_time = self._time(task.get("scheduled_end_time"), "结束时间")
+            except ValueError:
+                continue
+            if end_time <= start_time:
+                continue
+            recurring = bool(task.get("is_recurring")) and task.get("recurrence_rule") == "weekly"
+            last = first
+            if recurring:
+                try:
+                    last = date.fromisoformat(str(task.get("recurrence_until") or first.isoformat()))
+                except ValueError:
+                    last = first
+            cursor = max(start_date, first)
+            limit = min(end_date, last)
+            while cursor <= limit:
+                allowed = cursor == first or (recurring and cursor >= first and cursor.isoweekday() == first.isoweekday())
+                if allowed:
+                    events.append({
+                        "id": f"task:{task['id']}:{cursor.isoformat()}",
+                        "source_type": "task",
+                        "task_id": task["id"],
+                        "title": task["title"],
+                        "date": cursor.isoformat(),
+                        "start_time": start_time,
+                        "end_time": end_time,
+                        "color": colors.get(str(task.get("domain")), colors["inbox"]),
+                        "location": "时间段任务",
+                        "recurring": recurring,
+                    })
+                cursor += timedelta(days=1)
+        return events
 
     def skip_occurrence(self, meeting_id: str, occurrence_date: Any) -> bool:
         value = self._date(occurrence_date, "课程日期")

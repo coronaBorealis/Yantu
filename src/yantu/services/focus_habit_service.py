@@ -91,17 +91,23 @@ class FocusHabitService:
     def validate_profile(self, profile_id: str | None) -> dict[str, Any] | None:
         return self.get_profile(profile_id) if profile_id else None
 
-    def start_session(self, session_id: str, profile: Mapping[str, Any]) -> dict[str, Any]:
+    def start_session(
+        self, session_id: str, profile: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Start either a profile-filtered session or privacy-safe basic tracking."""
         now = self._now().isoformat()
         capability = self.probe.capability()
         available = bool(capability.get("available"))
+        profile_id = str(profile["id"]) if profile else None
+        profile_name = str(profile["name"]) if profile else "基础前台应用记录"
+        allowed_apps = list(profile["allowed_apps"]) if profile else []
         return self.repository.start_tracking({
             "session_id": session_id,
-            "profile_id": profile["id"],
-            "profile_name": profile["name"],
-            "allowed_apps_json": json.dumps(profile["allowed_apps"], ensure_ascii=False),
-            "idle_threshold_seconds": profile["idle_threshold_seconds"],
-            "switch_warning_count": profile["switch_warning_count"],
+            "profile_id": profile_id,
+            "profile_name": profile_name,
+            "allowed_apps_json": json.dumps(allowed_apps, ensure_ascii=False),
+            "idle_threshold_seconds": int(profile["idle_threshold_seconds"]) if profile else 60,
+            "switch_warning_count": int(profile["switch_warning_count"]) if profile else 8,
             "status": "monitoring" if available else "unavailable",
             "platform": str(capability.get("platform") or ""),
             "last_sampled_at": now,
@@ -145,11 +151,17 @@ class FocusHabitService:
             return self.repository.unavailable(session_id, reason=str(exc), sampled_at=now)
         process_name = str(snapshot.process_name or "unknown").strip().lower()[:120]
         allowed = set(habit["allowed_apps"])
-        is_allowed = process_name in allowed
+        observes_all_apps = not habit.get("profile_id")
+        is_allowed = observes_all_apps or process_name in allowed
         is_idle = snapshot.idle_seconds > int(habit["idle_threshold_seconds"])
         previous = str(habit.get("last_process_name") or "")
         switched = not is_idle and bool(previous) and previous != process_name
-        violation = not is_idle and not is_allowed and previous != process_name
+        violation = (
+            not observes_all_apps
+            and not is_idle
+            and not is_allowed
+            and previous != process_name
+        )
         return self.repository.add_sample(
             session_id,
             process_name=process_name,

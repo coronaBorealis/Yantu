@@ -11,7 +11,7 @@ from ..common import utc_now
 from .config import DEFAULT_DB_PATH
 from .constants import DOMAINS, PRIORITIES, STATUSES
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 13
 
 
 def _column_names(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -84,6 +84,15 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                 title TEXT NOT NULL,
                 domain TEXT NOT NULL DEFAULT 'inbox'
                     CHECK(domain IN ('research', 'course', 'personal', 'inbox')),
+                task_kind TEXT NOT NULL DEFAULT 'standard'
+                    CHECK(task_kind IN ('standard', 'free_learning')),
+                schedule_mode TEXT NOT NULL DEFAULT 'flexible'
+                    CHECK(schedule_mode IN ('flexible', 'time_block')),
+                scheduled_date TEXT,
+                scheduled_start_time TEXT,
+                scheduled_end_time TEXT,
+                schedule_timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+                recurrence_until TEXT,
                 subcategory TEXT NOT NULL DEFAULT '',
                 tags TEXT NOT NULL DEFAULT '[]',
                 description TEXT NOT NULL DEFAULT '',
@@ -136,6 +145,7 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
             CREATE TABLE IF NOT EXISTS semesters (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
+                stage_label TEXT NOT NULL DEFAULT '',
                 start_date TEXT NOT NULL,
                 end_date TEXT NOT NULL,
                 timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
@@ -178,7 +188,9 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                 end_week INTEGER NOT NULL CHECK(end_week >= start_week),
                 week_pattern TEXT NOT NULL DEFAULT 'all'
                     CHECK(week_pattern IN ('all', 'odd', 'even', 'custom')),
-                custom_weeks_json TEXT NOT NULL DEFAULT '[]'
+                custom_weeks_json TEXT NOT NULL DEFAULT '[]',
+                teacher_override TEXT NOT NULL DEFAULT '',
+                location_override TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS course_exceptions (
@@ -196,6 +208,39 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                 ON course_meetings(course_id);
             CREATE INDEX IF NOT EXISTS idx_course_exceptions_meeting_date
                 ON course_exceptions(meeting_id, occurrence_date);
+
+            CREATE TABLE IF NOT EXISTS archive_periods (
+                id TEXT PRIMARY KEY,
+                period_type TEXT NOT NULL CHECK(period_type IN ('week', 'month')),
+                period_key TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                manifest_version INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'sealed')),
+                entry_count INTEGER NOT NULL DEFAULT 0 CHECK(entry_count >= 0),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                sealed_at TEXT,
+                UNIQUE(period_type, period_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS archive_entries (
+                id TEXT PRIMARY KEY,
+                period_id TEXT NOT NULL REFERENCES archive_periods(id) ON DELETE CASCADE,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                checksum TEXT NOT NULL,
+                archived_at TEXT NOT NULL,
+                UNIQUE(period_id, entity_type, entity_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_archive_period_range
+                ON archive_periods(period_type, start_date, end_date);
+            CREATE INDEX IF NOT EXISTS idx_archive_entries_occurred
+                ON archive_entries(occurred_at, entity_type);
 
             CREATE TABLE IF NOT EXISTS planning_profiles (
                 id TEXT PRIMARY KEY,
@@ -273,6 +318,10 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                 last_resumed_at TEXT,
                 ended_at TEXT,
                 time_entry_id TEXT REFERENCES time_entries(id) ON DELETE SET NULL,
+                archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)),
+                task_title_snapshot TEXT,
+                task_domain_snapshot TEXT,
+                project_name_snapshot TEXT,
                 note TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -427,6 +476,30 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                 PRIMARY KEY(project_id, research_item_id)
             );
 
+            CREATE TABLE IF NOT EXISTS research_folders (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                parent_id TEXT REFERENCES research_folders(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                source_id TEXT REFERENCES research_sources(id) ON DELETE SET NULL,
+                source_collection_key TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_research_folder_name
+                ON research_folders(project_id, COALESCE(parent_id, ''), name);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_research_folder_source
+                ON research_folders(project_id, source_id, source_collection_key)
+                WHERE source_collection_key IS NOT NULL;
+            CREATE TABLE IF NOT EXISTS research_folder_items (
+                folder_id TEXT NOT NULL REFERENCES research_folders(id) ON DELETE CASCADE,
+                research_item_id TEXT NOT NULL REFERENCES research_items(id) ON DELETE CASCADE,
+                added_at TEXT NOT NULL,
+                PRIMARY KEY(folder_id, research_item_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_research_folder_items_item
+                ON research_folder_items(research_item_id);
+
             CREATE TABLE IF NOT EXISTS research_inbox (
                 research_item_id TEXT PRIMARY KEY REFERENCES research_items(id) ON DELETE CASCADE,
                 status TEXT NOT NULL DEFAULT 'pending'
@@ -475,12 +548,36 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
             connection,
             "tasks",
             {
+                "task_kind": "TEXT NOT NULL DEFAULT 'standard' CHECK(task_kind IN ('standard', 'free_learning'))",
+                "schedule_mode": "TEXT NOT NULL DEFAULT 'flexible' CHECK(schedule_mode IN ('flexible', 'time_block'))",
+                "scheduled_date": "TEXT",
+                "scheduled_start_time": "TEXT",
+                "scheduled_end_time": "TEXT",
+                "schedule_timezone": "TEXT NOT NULL DEFAULT 'Asia/Shanghai'",
+                "recurrence_until": "TEXT",
                 "parent_task_id": "TEXT REFERENCES tasks(id) ON DELETE SET NULL",
                 "deadline": "TEXT",
                 "estimated_hours": "REAL NOT NULL DEFAULT 0 CHECK(estimated_hours >= 0)",
                 "actual_hours": "REAL NOT NULL DEFAULT 0 CHECK(actual_hours >= 0)",
                 "deleted_at": "TEXT",
             },
+        )
+        _add_missing_columns(
+            connection,
+            "semesters",
+            {"stage_label": "TEXT NOT NULL DEFAULT ''"},
+        )
+        _add_missing_columns(
+            connection,
+            "course_meetings",
+            {
+                "teacher_override": "TEXT NOT NULL DEFAULT ''",
+                "location_override": "TEXT NOT NULL DEFAULT ''",
+            },
+        )
+        connection.execute(
+            """CREATE INDEX IF NOT EXISTS idx_tasks_scheduled_date
+            ON tasks(scheduled_date) WHERE schedule_mode = 'time_block'"""
         )
         _add_missing_columns(
             connection,
@@ -501,6 +598,31 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                 "auto_sync": "INTEGER NOT NULL DEFAULT 0 CHECK(auto_sync IN (0,1))",
             },
         )
+        _add_missing_columns(
+            connection,
+            "focus_sessions",
+            {
+                "archived": "INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1))",
+                "task_title_snapshot": "TEXT",
+                "task_domain_snapshot": "TEXT",
+                "project_name_snapshot": "TEXT",
+            },
+        )
+        if current_version < 11:
+            connection.execute("""
+                UPDATE focus_sessions
+                SET archived = CASE WHEN session_type = 'focus' AND elapsed_seconds > 0
+                    AND (status = 'completed' OR time_entry_id IS NOT NULL) THEN 1 ELSE 0 END,
+                    task_title_snapshot = (SELECT title FROM tasks WHERE id = focus_sessions.task_id),
+                    task_domain_snapshot = (SELECT domain FROM tasks WHERE id = focus_sessions.task_id),
+                    project_name_snapshot = (SELECT p.name FROM tasks t
+                        JOIN projects p ON p.id = t.project_id WHERE t.id = focus_sessions.task_id)
+                WHERE status IN ('completed', 'cancelled')
+            """)
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_focus_archive_ended
+            ON focus_sessions(ended_at DESC) WHERE archived = 1
+        """)
         if current_version < SCHEMA_VERSION:
             connection.execute(
                 """

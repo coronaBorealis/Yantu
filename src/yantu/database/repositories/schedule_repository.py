@@ -51,11 +51,12 @@ class ScheduleRepository:
             connection.execute(
                 """
                 INSERT INTO semesters
-                    (id, name, start_date, end_date, timezone, periods_json, created_at, updated_at)
+                    (id, name, stage_label, start_date, end_date, timezone, periods_json, created_at, updated_at)
                 VALUES
-                    (:id, :name, :start_date, :end_date, :timezone, :periods_json, :created_at, :updated_at)
+                    (:id, :name, :stage_label, :start_date, :end_date, :timezone, :periods_json, :created_at, :updated_at)
                 ON CONFLICT(id) DO UPDATE SET
-                    name=excluded.name, start_date=excluded.start_date,
+                    name=excluded.name, stage_label=excluded.stage_label,
+                    start_date=excluded.start_date,
                     end_date=excluded.end_date, timezone=excluded.timezone,
                     periods_json=excluded.periods_json, updated_at=excluded.updated_at
                 """,
@@ -129,10 +130,12 @@ class ScheduleRepository:
                     """
                     INSERT INTO course_meetings
                         (id, course_id, weekday, start_period, end_period, start_time,
-                         end_time, start_week, end_week, week_pattern, custom_weeks_json)
+                         end_time, start_week, end_week, week_pattern, custom_weeks_json,
+                         teacher_override, location_override)
                     VALUES
                         (:id, :course_id, :weekday, :start_period, :end_period, :start_time,
-                         :end_time, :start_week, :end_week, :week_pattern, :custom_weeks_json)
+                         :end_time, :start_week, :end_week, :week_pattern, :custom_weeks_json,
+                         :teacher_override, :location_override)
                     """,
                     values,
                 )
@@ -160,9 +163,13 @@ class ScheduleRepository:
                 values = dict(meeting)
                 values["custom_weeks_json"] = json.dumps(values.pop("custom_weeks", []))
                 connection.execute(
-                    """INSERT INTO course_meetings VALUES
+                    """INSERT INTO course_meetings
+                    (id,course_id,weekday,start_period,end_period,start_time,end_time,
+                     start_week,end_week,week_pattern,custom_weeks_json,teacher_override,
+                     location_override) VALUES
                     (:id,:course_id,:weekday,:start_period,:end_period,:start_time,
-                     :end_time,:start_week,:end_week,:week_pattern,:custom_weeks_json)""",
+                     :end_time,:start_week,:end_week,:week_pattern,:custom_weeks_json,
+                     :teacher_override,:location_override)""",
                     values,
                 )
 
@@ -172,7 +179,10 @@ class ScheduleRepository:
         with database(self.db_path) as connection:
             rows = connection.execute(
                 f"""
-                SELECT m.*, c.name, c.teacher, c.location, c.color, c.semester_id,
+                SELECT m.*, c.name,
+                       COALESCE(NULLIF(m.teacher_override, ''), c.teacher) AS teacher,
+                       COALESCE(NULLIF(m.location_override, ''), c.location) AS location,
+                       c.color, c.semester_id,
                        s.start_date AS semester_start, s.end_date AS semester_end
                 FROM course_meetings m
                 JOIN courses c ON c.id = m.course_id
@@ -233,6 +243,7 @@ class ScheduleRepository:
         import_record: dict[str, Any],
         semester: dict[str, Any],
         courses: list[tuple[dict[str, Any], list[dict[str, Any]]]],
+        learning_tasks: list[dict[str, Any]] | None = None,
     ) -> list[str]:
         """Persist an approved preview atomically."""
         with database(self.db_path) as connection:
@@ -241,9 +252,11 @@ class ScheduleRepository:
                 semester_values.pop("periods"), ensure_ascii=False
             )
             connection.execute(
-                """INSERT INTO semesters VALUES
-                (:id,:name,:start_date,:end_date,:timezone,:periods_json,:created_at,:updated_at)
-                ON CONFLICT(id) DO UPDATE SET name=excluded.name,start_date=excluded.start_date,
+                """INSERT INTO semesters
+                (id,name,stage_label,start_date,end_date,timezone,periods_json,created_at,updated_at)
+                VALUES
+                (:id,:name,:stage_label,:start_date,:end_date,:timezone,:periods_json,:created_at,:updated_at)
+                ON CONFLICT(id) DO UPDATE SET name=excluded.name,stage_label=excluded.stage_label,start_date=excluded.start_date,
                 end_date=excluded.end_date,timezone=excluded.timezone,
                 periods_json=excluded.periods_json,updated_at=excluded.updated_at""",
                 semester_values,
@@ -267,9 +280,34 @@ class ScheduleRepository:
                         values.pop("custom_weeks", []), ensure_ascii=False
                     )
                     connection.execute(
-                        """INSERT INTO course_meetings VALUES
+                        """INSERT INTO course_meetings
+                        (id,course_id,weekday,start_period,end_period,start_time,end_time,
+                         start_week,end_week,week_pattern,custom_weeks_json,teacher_override,
+                         location_override) VALUES
                         (:id,:course_id,:weekday,:start_period,:end_period,:start_time,
-                         :end_time,:start_week,:end_week,:week_pattern,:custom_weeks_json)""",
+                         :end_time,:start_week,:end_week,:week_pattern,:custom_weeks_json,
+                         :teacher_override,:location_override)""",
                         values,
                     )
+            for task in learning_tasks or []:
+                duplicate = connection.execute(
+                    """SELECT 1 FROM tasks
+                    WHERE title=? AND task_kind='free_learning' AND deleted_at IS NULL""",
+                    (task["title"],),
+                ).fetchone()
+                if duplicate:
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO tasks
+                        (id,title,domain,task_kind,schedule_mode,subcategory,tags,description,
+                         created_at,updated_at,estimated_minutes,priority,status,progress,
+                         is_recurring,recurrence_rule,notes,sort_order)
+                    VALUES
+                        (:id,:title,:domain,:task_kind,:schedule_mode,:subcategory,:tags,:description,
+                         :created_at,:updated_at,:estimated_minutes,:priority,:status,:progress,
+                         :is_recurring,:recurrence_rule,:notes,:sort_order)
+                    """,
+                    task,
+                )
             return created

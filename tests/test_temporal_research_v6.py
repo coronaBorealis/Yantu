@@ -60,7 +60,7 @@ def test_v5_to_v6_migration_is_idempotent_and_preserves_tasks(tmp_path: Path) ->
             "task_research_items",
             "research_inbox",
         } <= tables
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 13
         assert connection.execute(
             "SELECT title FROM tasks WHERE id='kept'"
         ).fetchone()[0] == "阅读论文"
@@ -205,7 +205,7 @@ def test_temporal_and_research_api_contracts(tmp_path: Path) -> None:
     assert client.get("/api/research/inbox").get_json()["items"][0]["id"] == item["id"]
 
     backup = client.get("/api/export").get_json()
-    assert backup["version"] == 9
+    assert backup["version"] == 13
     assert backup["research"]["links"][0]["task_id"] == task["id"]
     restored = create_app(tmp_path / "restored.db").test_client()
     response = restored.post("/api/import", json=backup)

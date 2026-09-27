@@ -160,7 +160,154 @@ class ResearchService:
 
     def list_project_items(self, project_id: str) -> list[dict[str, Any]]:
         self._research_project(project_id)
-        return self.repository.list_project_items(project_id)
+        items = self.repository.list_project_items(project_id)
+        history = self.repository.reading_history([str(item["id"]) for item in items])
+        for item in items:
+            item["reading_history"] = history.get(str(item["id"]), [])
+        return items
+
+    def list_folders(self, project_id: str) -> list[dict[str, Any]]:
+        self._research_project(project_id)
+        return self.repository.list_folders(project_id)
+
+    def create_folder(self, project_id: str, values: Mapping[str, Any]) -> dict[str, Any]:
+        self._research_project(project_id)
+        name = str(values.get("name") or "").strip()
+        if not name or len(name) > 120:
+            raise ValueError("类目名称必须为 1–120 个字符")
+        parent_id = str(values.get("parent_id") or "") or None
+        if parent_id:
+            parent = self.repository.get_folder(parent_id)
+            if not parent or parent["project_id"] != project_id:
+                raise ValueError("父类目不属于当前科研项目")
+        now = utc_now()
+        try:
+            return self.repository.save_folder({
+                "id": str(uuid.uuid4()), "project_id": project_id,
+                "parent_id": parent_id, "name": name, "source_id": None,
+                "source_collection_key": None, "created_at": now, "updated_at": now,
+            })
+        except Exception as exc:
+            if "UNIQUE constraint failed" in str(exc):
+                raise ValueError("同一层级已有同名类目") from exc
+            raise
+
+    def rename_folder(self, project_id: str, folder_id: str,
+                      values: Mapping[str, Any]) -> dict[str, Any]:
+        folder = self.repository.get_folder(folder_id)
+        if not folder or folder["project_id"] != project_id:
+            raise ValueError("类目不存在")
+        if folder.get("source_collection_key"):
+            raise ValueError("Zotero 导入类目由 Zotero 文件夹名称管理")
+        name = str(values.get("name") or "").strip()
+        if not name or len(name) > 120:
+            raise ValueError("类目名称必须为 1–120 个字符")
+        try:
+            return self.repository.rename_folder(folder_id, name, utc_now())
+        except Exception as exc:
+            if "UNIQUE constraint failed" in str(exc):
+                raise ValueError("同一层级已有同名类目") from exc
+            raise
+
+    def import_collection_folders(self, project_id: str, source_id: str,
+                                  collections: list[dict[str, Any]],
+                                  root_key: str, item_ids: list[str]) -> None:
+        """Mirror the selected Zotero tree and attach imported papers to its leaves."""
+        self._research_project(project_id)
+        by_key = {str(item["key"]): item for item in collections}
+        if root_key not in by_key:
+            raise ValueError("Zotero 文件夹不存在")
+        relevant = {root_key}
+        for item_id in item_ids:
+            item = self.repository.get_item(item_id)
+            if item and item["source_id"] == source_id:
+                relevant.update(str(key) for key in item["metadata"].get("collections", [])
+                                if str(key) in by_key)
+        relevant = {key for key in relevant if key == root_key or
+                    root_key in self._collection_ancestors(key, by_key)}
+        for key in list(relevant):
+            relevant.update(self._collection_ancestors(key, by_key) & set(by_key))
+        folder_specs = [by_key[key] for key in sorted(
+            relevant, key=lambda value: int(by_key[value]["depth"])
+        )]
+        memberships: dict[str, set[str]] = {}
+        for item_id in item_ids:
+            item = self.repository.get_item(item_id)
+            if not item or item["source_id"] != source_id:
+                continue
+            keys = set(str(key) for key in item["metadata"].get("collections", [])) & relevant
+            memberships[item_id] = keys or {root_key}
+        try:
+            self.repository.save_imported_tree(
+                project_id, source_id, folder_specs, memberships, utc_now()
+            )
+        except Exception as exc:
+            if "UNIQUE constraint failed" in str(exc):
+                raise ValueError("Zotero 文件夹与已有类目同名，请调整类目名称或关闭层级保留") from exc
+            raise
+
+    @staticmethod
+    def _collection_ancestors(key: str, by_key: Mapping[str, Mapping[str, Any]]) -> set[str]:
+        ancestors: set[str] = set()
+        current = str(by_key.get(key, {}).get("parent_key") or "")
+        while current and current not in ancestors:
+            ancestors.add(current)
+            current = str(by_key.get(current, {}).get("parent_key") or "")
+        return ancestors
+
+    def add_folder_item(self, project_id: str, folder_id: str, item_id: str) -> None:
+        folder = self.repository.get_folder(folder_id)
+        if not folder or folder["project_id"] != project_id:
+            raise ValueError("类目不存在")
+        if item_id not in {item["id"] for item in self.repository.list_project_items(project_id)}:
+            raise ValueError("论文不在当前项目中")
+        self.repository.add_folder_items(folder_id, [item_id], utc_now())
+
+    def create_linked_task(self, task: dict[str, Any], item_id: str) -> dict[str, Any]:
+        if task.get("domain") != "research":
+            raise ValueError("论文阅读任务必须属于科研领域")
+        self.repository.create_reading_task(item_id, task)
+        record = self.tasks.get(str(task["id"]))
+        assert record is not None
+        return record
+
+    def quick_reading_task(self, item_id: str, values: Mapping[str, Any]) -> dict[str, Any]:
+        preview = self.preview_task(item_id, {
+            "title": values.get("title"), "estimated_minutes": 60,
+            "status": "not_started", "subcategory": "论文阅读",
+        })
+        now = utc_now()
+        source = preview["task"]
+        task = {
+            "id": str(uuid.uuid4()), "parent_id": None, "project_id": None,
+            "title": source["title"], "domain": "research",
+            "task_kind": "free_learning",
+            "subcategory": "论文阅读", "tags": ["Zotero"],
+            "description": source["description"], "created_at": now,
+            "updated_at": now, "start_date": None, "due_date": None,
+            "estimated_minutes": 60, "actual_minutes": 0, "priority": "medium",
+            "status": "not_started", "progress": 0, "is_recurring": 0,
+            "recurrence_rule": "", "notes": "", "completed_at": None,
+            "sort_order": 0,
+        }
+        resume_task_id = str(values.get("resume_task_id") or "").strip() or None
+        task_id, reused = self.repository.get_or_create_quick_reading_task(
+            item_id, task, resume_task_id=resume_task_id
+        )
+        record = self.tasks.get(task_id)
+        assert record is not None
+        if reused and int(record.get("actual_minutes") or 0) >= max(1, int(record.get("estimated_minutes") or 60)):
+            baseline = max(1, int(record.get("estimated_minutes") or 60))
+            accumulated = int(record.get("actual_minutes") or 0)
+            next_limit = baseline + ((accumulated - baseline) // 60 + 1) * 60
+            updated = self.tasks.update(task_id, {
+                "estimated_minutes": next_limit,
+                "estimated_hours": next_limit / 60,
+                "updated_at": now,
+            })
+            if updated:
+                record = updated
+        return {"task": record, "reused": reused}
 
     def link_project_items(
         self,
@@ -307,6 +454,9 @@ class ResearchService:
             "items": self.repository.list_items(include_deleted=True),
             "links": self.repository.list_links(),
             "project_links": self.repository.list_project_links(),
+            "folders": [folder for project in self.projects.list()
+                        for folder in self.repository.list_folders(project["id"])],
+            "folder_links": self.repository.list_folder_links(),
             "inbox": [
                 item
                 for status in sorted(INBOX_STATUSES)
@@ -352,6 +502,46 @@ class ResearchService:
                     collection_key=self._optional_text(link.get("source_collection_key")),
                     note=str(link.get("note") or ""),
                 )
+        folder_ids: dict[str, str] = {}
+        pending = [dict(folder) for folder in payload.get("folders") or []
+                   if isinstance(folder, Mapping)]
+        while pending:
+            progressed = False
+            for folder in pending[:]:
+                project_id = str(folder.get("project_id") or "")
+                parent_old = str(folder.get("parent_id") or "")
+                if not self.projects.get(project_id):
+                    pending.remove(folder)
+                    continue
+                if parent_old and parent_old not in folder_ids:
+                    continue
+                name = str(folder.get("name") or "").strip()
+                if not name:
+                    pending.remove(folder)
+                    continue
+                now = utc_now()
+                saved = self.repository.save_folder({
+                    "id": str(folder.get("id") or uuid.uuid4()),
+                    "project_id": project_id,
+                    "parent_id": folder_ids.get(parent_old),
+                    "name": name[:120],
+                    "source_id": source_ids.get(str(folder.get("source_id") or "")),
+                    "source_collection_key": self._optional_text(folder.get("source_collection_key")),
+                    "created_at": str(folder.get("created_at") or now),
+                    "updated_at": now,
+                })
+                folder_ids[str(folder.get("id") or saved["id"])] = saved["id"]
+                pending.remove(folder)
+                progressed = True
+            if not progressed:
+                break
+        for link in payload.get("folder_links") or []:
+            if not isinstance(link, Mapping):
+                continue
+            folder_id = folder_ids.get(str(link.get("folder_id") or ""))
+            item_id = item_ids.get(str(link.get("research_item_id") or ""))
+            if folder_id and item_id:
+                self.repository.add_folder_items(folder_id, [item_id], utc_now())
         for queued in payload.get("inbox") or []:
             if not isinstance(queued, Mapping):
                 continue

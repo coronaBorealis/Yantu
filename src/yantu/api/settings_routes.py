@@ -35,6 +35,14 @@ def create_settings_blueprint(db_path: Path | str, service: SettingsService | No
     def preferences_put():
         return jsonify({"preferences": settings.update_preferences(request.get_json(silent=True) or {})})
 
+    @blueprint.get("/focus-draft")
+    def focus_draft_get():
+        return jsonify({"draft": settings.get_focus_draft()})
+
+    @blueprint.put("/focus-draft")
+    def focus_draft_put():
+        return jsonify({"draft": settings.update_focus_draft(request.get_json(silent=True) or {})})
+
     @blueprint.errorhandler(ValueError)
     def invalid(error: ValueError):
         return jsonify({"error": str(error)}), 400

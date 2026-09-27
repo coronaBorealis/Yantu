@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from pathlib import Path
 from typing import Any
 
-from ..repository import database, init_db
+from ..repository import _with_task_aliases, database, init_db
 
 
 def _decode_item(row: Any) -> dict[str, Any]:
@@ -292,7 +293,21 @@ class ResearchRepository:
                 """,
                 (project_id,),
             ).fetchall()
-        return [_decode_item(row) for row in rows]
+            memberships = connection.execute("""
+                SELECT fi.research_item_id, fi.folder_id
+                FROM research_folder_items fi
+                JOIN research_folders f ON f.id=fi.folder_id
+                WHERE f.project_id=?
+            """, (project_id,)).fetchall()
+        folder_ids: dict[str, list[str]] = {}
+        for membership in memberships:
+            folder_ids.setdefault(str(membership["research_item_id"]), []).append(
+                str(membership["folder_id"])
+            )
+        items = [_decode_item(row) for row in rows]
+        for item in items:
+            item["folder_ids"] = folder_ids.get(str(item["id"]), [])
+        return items
 
     def list_project_links(self) -> list[dict[str, Any]]:
         with database(self.db_path) as connection:
@@ -300,6 +315,246 @@ class ResearchRepository:
                 "SELECT * FROM project_research_items ORDER BY created_at"
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def list_folders(self, project_id: str) -> list[dict[str, Any]]:
+        with database(self.db_path) as connection:
+            rows = connection.execute("""
+                SELECT f.*, COUNT(i.id) AS paper_count
+                FROM research_folders f
+                LEFT JOIN research_folder_items fi ON fi.folder_id = f.id
+                LEFT JOIN research_items i ON i.id=fi.research_item_id AND i.deleted_at IS NULL
+                WHERE f.project_id = ?
+                GROUP BY f.id ORDER BY f.created_at, f.name
+            """, (project_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_folder(self, folder_id: str) -> dict[str, Any] | None:
+        with database(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT * FROM research_folders WHERE id = ?", (folder_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def rename_folder(self, folder_id: str, name: str, updated_at: str) -> dict[str, Any]:
+        with database(self.db_path) as connection:
+            connection.execute(
+                "UPDATE research_folders SET name=?, updated_at=? WHERE id=?",
+                (name, updated_at, folder_id)
+            )
+        result = self.get_folder(folder_id)
+        assert result is not None
+        return result
+
+    def save_folder(self, record: dict[str, Any]) -> dict[str, Any]:
+        with database(self.db_path) as connection:
+            existing = None
+            if record.get("source_collection_key"):
+                existing = connection.execute("""
+                    SELECT id,project_id FROM research_folders
+                    WHERE project_id=? AND source_id=? AND source_collection_key=?
+                """, (record["project_id"], record["source_id"],
+                       record["source_collection_key"])).fetchone()
+            if not existing:
+                existing = connection.execute(
+                    "SELECT id,project_id FROM research_folders WHERE id=?",
+                    (record["id"],)
+                ).fetchone()
+            if existing:
+                if existing["project_id"] != record["project_id"]:
+                    raise ValueError("类目 ID 已属于其他项目")
+                record["id"] = str(existing["id"])
+                connection.execute("""
+                    UPDATE research_folders SET parent_id=:parent_id, name=:name,
+                        source_id=:source_id,
+                        source_collection_key=:source_collection_key,
+                        updated_at=:updated_at WHERE id=:id
+                """, record)
+            else:
+                connection.execute("""
+                    INSERT INTO research_folders
+                        (id,project_id,parent_id,name,source_id,source_collection_key,
+                         created_at,updated_at)
+                    VALUES (:id,:project_id,:parent_id,:name,:source_id,
+                            :source_collection_key,:created_at,:updated_at)
+                """, record)
+        result = self.get_folder(record["id"])
+        assert result is not None
+        return result
+
+    def save_imported_tree(
+        self, project_id: str, source_id: str,
+        folders: list[dict[str, Any]], memberships: dict[str, set[str]],
+        now: str,
+    ) -> None:
+        """Save Zotero hierarchy and paper membership together; a conflict rolls back all."""
+        folder_ids: dict[str, str] = {}
+        with database(self.db_path) as connection:
+            for folder in folders:
+                key = str(folder["key"])
+                parent_key = str(folder.get("parent_key") or "")
+                parent_id = folder_ids.get(parent_key)
+                row = connection.execute("""
+                    SELECT id FROM research_folders
+                    WHERE project_id=? AND source_id=? AND source_collection_key=?
+                """, (project_id, source_id, key)).fetchone()
+                if row:
+                    folder_id = str(row["id"])
+                    connection.execute("""
+                        UPDATE research_folders
+                        SET parent_id=?, name=?, updated_at=? WHERE id=?
+                    """, (parent_id, folder["name"], now, folder_id))
+                else:
+                    folder_id = str(uuid.uuid4())
+                    connection.execute("""
+                        INSERT INTO research_folders
+                            (id,project_id,parent_id,name,source_id,
+                             source_collection_key,created_at,updated_at)
+                        VALUES (?,?,?,?,?,?,?,?)
+                    """, (folder_id, project_id, parent_id, folder["name"],
+                          source_id, key, now, now))
+                folder_ids[key] = folder_id
+            for item_id, keys in memberships.items():
+                for key in keys:
+                    connection.execute("""
+                        INSERT OR IGNORE INTO research_folder_items
+                            (folder_id,research_item_id,added_at)
+                        VALUES (?,?,?)
+                    """, (folder_ids[key], item_id, now))
+
+    def add_folder_items(self, folder_id: str, item_ids: list[str], added_at: str) -> int:
+        created = 0
+        with database(self.db_path) as connection:
+            for item_id in dict.fromkeys(item_ids):
+                cursor = connection.execute("""
+                    INSERT OR IGNORE INTO research_folder_items
+                        (folder_id,research_item_id,added_at) VALUES (?,?,?)
+                """, (folder_id, item_id, added_at))
+                created += int(cursor.rowcount)
+        return created
+
+    def list_folder_links(self) -> list[dict[str, Any]]:
+        with database(self.db_path) as connection:
+            rows = connection.execute(
+                "SELECT * FROM research_folder_items ORDER BY added_at"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def reading_history(self, item_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+        if not item_ids:
+            return {}
+        placeholders = ",".join("?" for _ in item_ids)
+        with database(self.db_path) as connection:
+            rows = connection.execute(f"""
+                SELECT l.research_item_id, t.id AS task_id, t.title AS task_title,
+                       t.status, t.progress, t.actual_minutes, t.estimated_minutes,
+                       t.task_kind, t.due_date,
+                       (SELECT COUNT(*) FROM focus_sessions f
+                        WHERE f.task_id=t.id AND f.archived=1) AS focus_sessions,
+                       (SELECT COALESCE(SUM(f.elapsed_seconds),0) FROM focus_sessions f
+                        WHERE f.task_id=t.id AND f.archived=1) AS focus_seconds,
+                       t.created_at, t.completed_at, l.relation_type
+                FROM task_research_items l JOIN tasks t ON t.id=l.task_id
+                WHERE l.research_item_id IN ({placeholders})
+                  AND l.relation_type IN ('reading','review')
+                  AND t.deleted_at IS NULL
+                ORDER BY t.created_at
+            """, item_ids).fetchall()
+        result: dict[str, list[dict[str, Any]]] = {key: [] for key in item_ids}
+        for row in rows:
+            result[str(row["research_item_id"])].append(dict(row))
+        return result
+
+    def get_or_create_quick_reading_task(
+        self, item_id: str, task: dict[str, Any], *, resume_task_id: str | None = None
+    ) -> tuple[str, bool]:
+        """Reuse an unfinished reading path atomically, including default v10 quick tasks."""
+        task = _with_task_aliases(task)
+        with database(self.db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            item = connection.execute(
+                "SELECT title FROM research_items WHERE id=? AND deleted_at IS NULL",
+                (item_id,),
+            ).fetchone()
+            if not item:
+                raise ValueError("论文条目不存在")
+            if resume_task_id:
+                existing = connection.execute("""
+                    SELECT t.id, t.task_kind, t.due_date FROM task_research_items l
+                    JOIN tasks t ON t.id=l.task_id
+                    WHERE l.research_item_id=? AND l.task_id=?
+                      AND l.relation_type IN ('reading','review')
+                      AND t.deleted_at IS NULL
+                      AND t.status IN ('not_started','in_progress','waiting')
+                """, (item_id, resume_task_id)).fetchone()
+                if not existing:
+                    raise ValueError("所选阅读任务不属于此论文或已结束")
+                if existing["due_date"]:
+                    raise ValueError("有截止日期的任务请先在任务编辑中转为自由学习")
+            else:
+                existing = connection.execute("""
+                SELECT t.id, t.task_kind FROM task_research_items l
+                JOIN tasks t ON t.id=l.task_id
+                WHERE l.research_item_id=? AND l.relation_type='reading'
+                  AND t.deleted_at IS NULL
+                  AND t.status IN ('not_started','in_progress','waiting')
+                  AND (t.task_kind='free_learning' OR
+                       (t.task_kind='standard' AND t.title=?
+                        AND t.estimated_minutes=60 AND t.due_date IS NULL))
+                ORDER BY CASE WHEN t.task_kind='free_learning' THEN 0 ELSE 1 END,
+                         t.created_at DESC LIMIT 1
+                """, (item_id, f"阅读：{item['title']}")).fetchone()
+            if existing:
+                if existing["task_kind"] != "free_learning":
+                    connection.execute(
+                        "UPDATE tasks SET task_kind='free_learning', updated_at=? WHERE id=?",
+                        (task["updated_at"], existing["id"]),
+                    )
+                return str(existing["id"]), True
+            columns = list(task)
+            values = [json.dumps(task[key], ensure_ascii=False) if key == "tags"
+                      else task[key] for key in columns]
+            connection.execute(
+                f"INSERT INTO tasks ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                values,
+            )
+            connection.execute("""
+                INSERT INTO task_research_items
+                    (task_id,research_item_id,relation_type,note,created_at)
+                VALUES (?,?,?,?,?)
+            """, (task["id"], item_id, "reading", "快速阅读 / 复盘", task["created_at"]))
+            connection.execute("""
+                UPDATE research_inbox SET status='converted', task_id=?, resolved_at=?
+                WHERE research_item_id=? AND status='pending'
+            """, (task["id"], task["created_at"], item_id))
+        return str(task["id"]), False
+
+    def create_reading_task(self, item_id: str, task: dict[str, Any],
+                            *, relation_type: str = "reading") -> None:
+        task = _with_task_aliases(task)
+        columns = list(task)
+        values = [json.dumps(task[key], ensure_ascii=False) if key == "tags"
+                  else task[key] for key in columns]
+        with database(self.db_path) as connection:
+            existing = connection.execute(
+                "SELECT 1 FROM research_items WHERE id=? AND deleted_at IS NULL",
+                (item_id,)
+            ).fetchone()
+            if not existing:
+                raise ValueError("论文条目不存在")
+            connection.execute(
+                f"INSERT INTO tasks ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                values,
+            )
+            connection.execute("""
+                INSERT INTO task_research_items
+                    (task_id,research_item_id,relation_type,note,created_at)
+                VALUES (?,?,?,?,?)
+            """, (task["id"], item_id, relation_type, "快速阅读 / 复盘", task["created_at"]))
+            connection.execute("""
+                UPDATE research_inbox
+                SET status='converted', task_id=?, resolved_at=?
+                WHERE research_item_id=? AND status='pending'
+            """, (task["id"], task["created_at"], item_id))
 
     def list_inbox(self, status: str = "pending") -> list[dict[str, Any]]:
         with database(self.db_path) as connection:

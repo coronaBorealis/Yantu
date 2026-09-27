@@ -61,7 +61,7 @@ class PaddleOCREngine:
         blocks: list[dict[str, Any]] = []
         if hasattr(self.engine, "predict"):
             results = self.engine.predict(str(path))
-            for result in results:
+            for page_index, result in enumerate(results):
                 data = getattr(result, "json", result)
                 if callable(data):
                     data = data()
@@ -75,6 +75,7 @@ class PaddleOCREngine:
                         "text": str(text),
                         "confidence": float(scores[index]) if index < len(scores) else 0.5,
                         "bbox": list(boxes[index]) if index < len(boxes) else [],
+                        "page": page_index,
                     })
         else:
             results = self.engine.ocr(str(path))
@@ -96,7 +97,15 @@ def _header_map(headers: list[Any]) -> dict[str, int]:
 
 
 def _period_range(value: Any) -> tuple[int, int]:
-    numbers = [int(item) for item in re.findall(r"\d+", str(value or ""))]
+    text = str(value or "")
+    numbers = [int(item) for item in re.findall(r"\d+", text)]
+    if not numbers:
+        chinese = {
+            "十三": 13, "十二": 12, "十一": 11, "十": 10,
+            "九": 9, "八": 8, "七": 7, "六": 6, "五": 5,
+            "四": 4, "三": 3, "二": 2, "一": 1,
+        }
+        numbers = [number for label, number in chinese.items() if f"第{label}节" in text]
     if not numbers:
         raise ValueError("无法识别节次")
     return numbers[0], numbers[-1]
@@ -111,7 +120,14 @@ def _week_rule(value: Any) -> tuple[int, int, str, list[int]]:
     if "双" in text:
         return start, end, "even", []
     if any(mark in text for mark in (",", "，", "、")) and len(numbers) > 1:
-        return min(numbers), max(numbers), "custom", numbers
+        weeks: set[int] = set()
+        for part in re.split(r"[,，、]", text.replace("周", "")):
+            bounds = [int(item) for item in re.findall(r"\d+", part)]
+            if len(bounds) >= 2:
+                weeks.update(range(min(bounds[0], bounds[1]), max(bounds[0], bounds[1]) + 1))
+            elif bounds:
+                weeks.add(bounds[0])
+        return min(weeks), max(weeks), "custom", sorted(weeks)
     return start, end, "all", []
 
 
@@ -134,8 +150,8 @@ class ScheduleImportService:
     @staticmethod
     def validate_file(filename: str, content: bytes) -> str:
         extension = Path(filename).suffix.lower()
-        if extension not in {".png", ".jpg", ".jpeg", ".xlsx", ".csv"}:
-            raise ValueError("仅支持 PNG、JPG、XLSX 和 CSV 课表")
+        if extension not in {".png", ".jpg", ".jpeg", ".pdf", ".xlsx", ".csv"}:
+            raise ValueError("仅支持 PDF、PNG、JPG、XLSX 和 CSV 课表")
         if not content:
             raise ValueError("课表文件为空")
         if len(content) > 10 * 1024 * 1024:
@@ -144,6 +160,7 @@ class ScheduleImportService:
             ".png": content.startswith(b"\x89PNG\r\n\x1a\n"),
             ".jpg": content.startswith(b"\xff\xd8\xff"),
             ".jpeg": content.startswith(b"\xff\xd8\xff"),
+            ".pdf": content.startswith(b"%PDF-"),
             ".xlsx": content.startswith(b"PK"),
         }
         if extension in signatures and not signatures[extension]:
@@ -156,7 +173,7 @@ class ScheduleImportService:
         semester_values = dict(config.get("semester") or {})
         semester_values.setdefault("periods", DEFAULT_PERIODS)
         semester = self.schedule.normalize_semester(semester_values)
-        raw = self._parse(source_type, content)
+        raw, learning_raw = self._parse(source_type, content)
         courses: list[dict[str, Any]] = []
         warnings: list[str] = []
         for index, item in enumerate(raw):
@@ -182,19 +199,33 @@ class ScheduleImportService:
             for course in courses:
                 course["selected"] = False
                 course["warnings"].append("可能是重复导入")
+        courses = self._merge_course_drafts(courses)
+        learning_items = [
+            {
+                "draft_id": str(uuid.uuid4()),
+                "selected": True,
+                "title": str(item.get("title") or "").strip(),
+                "teacher": str(item.get("teacher") or "").strip(),
+                "class_name": str(item.get("class_name") or "").strip(),
+                "confidence": float(item.get("confidence", 0.8)),
+            }
+            for item in learning_raw
+            if str(item.get("title") or "").strip()
+        ]
         self._mark_conflicts(courses, warnings, semester["id"])
         return {
             "source_type": source_type,
             "source_hash": source_hash,
             "semester": semester,
             "courses": courses,
+            "learning_items": learning_items,
             "warnings": warnings,
         }
 
-    def _parse(self, source_type: str, content: bytes) -> list[dict[str, Any]]:
+    def _parse(self, source_type: str, content: bytes) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         if source_type == "csv":
             text = content.decode("utf-8-sig")
-            return self._parse_rows(list(csv.reader(io.StringIO(text))))
+            return self._parse_rows(list(csv.reader(io.StringIO(text)))), []
         if source_type == "xlsx":
             try:
                 from openpyxl import load_workbook
@@ -202,15 +233,15 @@ class ScheduleImportService:
                 raise ValueError("XLSX 支持未安装，请重新安装 requirements.txt") from exc
             workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
             sheet = workbook.active
-            return self._parse_rows([list(row) for row in sheet.iter_rows(values_only=True)])
-        suffix = ".png" if source_type == "png" else ".jpg"
+            return self._parse_rows([list(row) for row in sheet.iter_rows(values_only=True)]), []
+        suffix = f".{source_type}" if source_type in {"png", "pdf"} else ".jpg"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temporary:
             temporary.write(content)
             path = Path(temporary.name)
         try:
             engine = self.ocr_engine or PaddleOCREngine()
             blocks = engine.recognize(path)
-            return self._parse_ocr_blocks(blocks)
+            return self._parse_ocr_blocks(blocks), self._parse_ocr_learning_items(blocks)
         finally:
             path.unlink(missing_ok=True)
 
@@ -253,6 +284,102 @@ class ScheduleImportService:
                 })
         return output
 
+    @staticmethod
+    def _parse_ocr_learning_items(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        def center(block: dict[str, Any]) -> tuple[float, float]:
+            box = block.get("bbox") or []
+            if len(box) == 4 and all(isinstance(item, (int, float)) for item in box):
+                return ((float(box[0]) + float(box[2])) / 2, (float(box[1]) + float(box[3])) / 2)
+            if box and isinstance(box[0], (list, tuple)):
+                return (
+                    sum(float(point[0]) for point in box) / len(box),
+                    sum(float(point[1]) for point in box) / len(box),
+                )
+            return (0, 0)
+
+        aliases = {"课程名称": "title", "班级名称": "class_name", "任课教师": "teacher"}
+        headers: dict[tuple[int, str], tuple[float, float]] = {}
+        for block in blocks:
+            label = re.sub(r"\s+", "", str(block.get("text") or ""))
+            if label in aliases:
+                headers[(int(block.get("page") or 0), aliases[label])] = center(block)
+        output: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for anchor in blocks:
+            class_name = str(anchor.get("text") or "").strip()
+            if "MOOC" not in class_name.upper():
+                continue
+            page = int(anchor.get("page") or 0)
+            _, row_y = center(anchor)
+            record: dict[str, Any] = {"class_name": class_name}
+            for field in ("title", "teacher"):
+                header = headers.get((page, field))
+                if not header:
+                    continue
+                candidates = [
+                    block for block in blocks
+                    if int(block.get("page") or 0) == page
+                    and block is not anchor
+                    and abs(center(block)[1] - row_y) <= 42
+                    and center(block)[1] > header[1]
+                ]
+                if candidates:
+                    chosen = min(candidates, key=lambda block: abs(center(block)[0] - header[0]))
+                    record[field] = str(chosen.get("text") or "").strip()
+                    record.setdefault("confidence", float(chosen.get("confidence", 0.8)))
+            if not record.get("title"):
+                match = re.match(r"(.+?)(?:\d+班)?[（(].*MOOC", class_name, re.IGNORECASE)
+                record["title"] = match.group(1).strip() if match else ""
+            key = (str(record.get("title") or ""), class_name)
+            if key[0] and key not in seen:
+                seen.add(key)
+                output.append(record)
+        return output
+
+    @staticmethod
+    def _merge_course_drafts(drafts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        by_name: dict[str, dict[str, Any]] = {}
+        for draft in drafts:
+            if draft.get("errors") or not draft.get("meetings"):
+                merged.append(draft)
+                continue
+            key = re.sub(r"\s+", "", str(draft.get("name") or "")).casefold()
+            existing = by_name.get(key)
+            if existing is None:
+                by_name[key] = draft
+                merged.append(draft)
+                continue
+            existing["meetings"].extend(draft["meetings"])
+            existing["confidence"] = min(existing["confidence"], draft["confidence"])
+            existing["warnings"].extend(draft.get("warnings") or [])
+            if draft.get("teacher") and draft["teacher"] != existing.get("teacher"):
+                existing["warnings"].append("不同周次存在教师变化，已保留到具体课次")
+        for draft in merged:
+            meetings = sorted(
+                draft.get("meetings") or [],
+                key=lambda item: (
+                    item["weekday"], item["start_week"], item["end_week"], item["start_period"]
+                ),
+            )
+            compact: list[dict[str, Any]] = []
+            for meeting in meetings:
+                previous = compact[-1] if compact else None
+                same_rule = previous and all(
+                    previous.get(field) == meeting.get(field)
+                    for field in (
+                        "weekday", "start_week", "end_week", "week_pattern", "custom_weeks",
+                        "teacher_override", "location_override",
+                    )
+                )
+                if same_rule and meeting["start_period"] == previous["end_period"] + 1:
+                    previous["end_period"] = meeting["end_period"]
+                    previous["end_time"] = meeting["end_time"]
+                else:
+                    compact.append(meeting)
+            draft["meetings"] = compact
+        return merged
+
     def _parse_ocr_blocks(self, blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         output = []
         for block in blocks:
@@ -290,43 +417,67 @@ class ScheduleImportService:
             periods = []
             for block in blocks:
                 text = str(block.get("text") or "").strip()
+                page = int(block.get("page") or 0)
                 try:
                     if text in WEEKDAYS or text.startswith(("周", "星期")):
-                        headers.append((*center(block), _weekday(text), block))
+                        headers.append((page, *center(block), _weekday(text), block))
                         continue
                 except ValueError:
                     pass
-                if "节" in text and re.search(r"\d", text):
+                if re.fullmatch(r"(?:第)?\s*\d{1,2}\s*(?:[-—至]\s*\d{1,2})?\s*(?:节)?", text) or re.fullmatch(
+                    r"第(?:十[一二三]?|[一二三四五六七八九])节", text
+                ):
                     try:
-                        periods.append((*center(block), _period_range(text), block))
+                        periods.append((page, *center(block), _period_range(text), block))
                     except ValueError:
                         pass
             if headers and periods:
-                groups: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
-                ignored = {id(item[3]) for item in headers} | {id(item[3]) for item in periods}
+                groups: dict[tuple[int, int, int, int], list[dict[str, Any]]] = {}
+                ignored = {id(item[4]) for item in headers} | {id(item[4]) for item in periods}
                 for block in blocks:
                     if id(block) in ignored or not str(block.get("text") or "").strip():
                         continue
+                    page = int(block.get("page") or 0)
                     x, y = center(block)
-                    header = min(headers, key=lambda item: abs(item[0] - x))
-                    period = min(periods, key=lambda item: abs(item[1] - y))
-                    groups.setdefault((header[2], period[2][0], period[2][1]), []).append(block)
-                for (weekday, start_period, end_period), group in groups.items():
+                    page_headers = [item for item in headers if item[0] == page]
+                    page_periods = [item for item in periods if item[0] == page]
+                    if not page_headers or not page_periods:
+                        continue
+                    header = min(page_headers, key=lambda item: abs(item[1] - x))
+                    period = min(page_periods, key=lambda item: abs(item[2] - y))
+                    groups.setdefault((page, header[3], period[3][0], period[3][1]), []).append(block)
+                week_line = re.compile(
+                    r"^\s*\d+(?:\s*[-—至]\s*\d+)?(?:\s*[,，、]\s*\d+(?:\s*[-—至]\s*\d+)?)*\s*周"
+                )
+                for (_page, weekday, start_period, end_period), group in groups.items():
                     group.sort(key=lambda item: center(item)[1])
                     texts = [str(item.get("text") or "").strip() for item in group]
-                    weeks = next((text for text in texts if "周" in text), "1-18周")
-                    details = [text for text in texts if text != weeks]
-                    if not details:
-                        continue
-                    output.append({
-                        "name": details[0], "teacher": details[1] if len(details) > 1 else "",
-                        "location": details[2] if len(details) > 2 else "",
-                        "weekday": weekday, "periods": f"{start_period}-{end_period}节",
-                        "weeks": weeks,
-                        "confidence": min(float(item.get("confidence", 0.5)) for item in group),
-                    })
+                    starts = [index for index, value in enumerate(texts) if week_line.search(value)]
+                    sequences = []
+                    if starts:
+                        if len(starts) == 1 and starts[0] > 0:
+                            sequences = [texts]
+                        for position, index in enumerate(starts):
+                            if sequences:
+                                break
+                            stop = starts[position + 1] if position + 1 < len(starts) else len(texts)
+                            sequences.append(texts[index:stop])
+                    else:
+                        sequences = [texts]
+                    for sequence in sequences:
+                        weeks = next((value for value in sequence if week_line.search(value)), "1-18周")
+                        details = [value for value in sequence if value != weeks]
+                        if not details:
+                            continue
+                        output.append({
+                            "name": details[0], "teacher": details[1] if len(details) > 1 else "",
+                            "location": details[2] if len(details) > 2 else "",
+                            "weekday": weekday, "periods": f"{start_period}-{end_period}节",
+                            "weeks": weeks,
+                            "confidence": min(float(item.get("confidence", 0.5)) for item in group),
+                        })
         if not output:
-            raise ValueError("未能从图片中识别课程，请裁剪无关区域或改用 XLSX/CSV")
+            raise ValueError("未能从 PDF/图片中识别课程，请裁剪无关区域或改用 XLSX/CSV")
         return output
 
     def _normalize_draft(self, item: dict[str, Any], semester: dict[str, Any], index: int) -> dict[str, Any]:
@@ -343,6 +494,8 @@ class ScheduleImportService:
             "end_period": end_period, "start_time": start_time, "end_time": end_time,
             "start_week": start_week, "end_week": end_week,
             "week_pattern": pattern, "custom_weeks": custom,
+            "teacher_override": str(item.get("teacher") or "").strip(),
+            "location_override": str(item.get("location") or "").strip(),
         }, course_id="preview")
         meeting.pop("course_id")
         return {
@@ -384,14 +537,17 @@ class ScheduleImportService:
     def confirm(self, payload: dict[str, Any]) -> list[str]:
         source_type = str(payload.get("source_type") or "")
         source_hash = str(payload.get("source_hash") or "")
-        if source_type not in {"png", "jpg", "jpeg", "xlsx", "csv"} or len(source_hash) != 64:
+        if source_type not in {"png", "jpg", "jpeg", "pdf", "xlsx", "csv"} or len(source_hash) != 64:
             raise ValueError("导入来源无效，请重新生成预览")
         if self.repository.source_exists(source_type, source_hash):
             raise ValueError("该课表文件已经导入")
         semester = self.schedule.normalize_semester(payload.get("semester") or {})
         selected = [item for item in payload.get("courses", []) if item.get("selected", True)]
-        if not selected:
-            raise ValueError("至少选择一门有效课程")
+        selected_learning = [
+            item for item in payload.get("learning_items", []) if item.get("selected", True)
+        ]
+        if not selected and not selected_learning:
+            raise ValueError("至少选择一门有效课程或自由学习条目")
         import_id = str(uuid.uuid4())
         now = utc_now()
         courses = []
@@ -413,8 +569,36 @@ class ScheduleImportService:
                 "created_at": now, "updated_at": now, "deleted_at": None,
             }
             courses.append((course, meetings))
+        learning_tasks = []
+        for item in selected_learning:
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+            teacher = str(item.get("teacher") or "").strip()
+            class_name = str(item.get("class_name") or "").strip()
+            learning_tasks.append({
+                "id": str(uuid.uuid4()),
+                "title": title,
+                "domain": "course",
+                "task_kind": "free_learning",
+                "schedule_mode": "flexible",
+                "subcategory": "MOOC",
+                "tags": "[]",
+                "description": "",
+                "created_at": now,
+                "updated_at": now,
+                "estimated_minutes": 60,
+                "priority": "medium",
+                "status": "not_started",
+                "progress": 0,
+                "is_recurring": 0,
+                "recurrence_rule": "",
+                "notes": "；".join(part for part in (class_name, f"任课教师：{teacher}" if teacher else "") if part),
+                "sort_order": 0,
+            })
         return self.repository.create_import(
             {"id": import_id, "source_type": source_type, "source_hash": source_hash, "imported_at": now},
             semester,
             courses,
+            learning_tasks,
         )

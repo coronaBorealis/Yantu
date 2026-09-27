@@ -12,11 +12,53 @@ from typing import Any
 
 from . import __version__
 from .database.config import resolve_app_paths
+from .focus_widget import FocusWidgetBridge, load_focus_widget_html
 from .main import create_app
+from .services.task_service import TaskService
 
 
 APP_MUTEX_NAME = "Yantu-8EAA093B-3C62-4C9B-9555-A7DB272E35B3"
 APP_USER_MODEL_ID = "Yantu.ResearchWorkbench"
+FOCUS_WIDGET_SIZE = (230, 238)
+FOCUS_WIDGET_MARGIN = 16
+
+
+class _Rect(ctypes.Structure):
+    _fields_ = [
+        ("left", ctypes.c_long), ("top", ctypes.c_long),
+        ("right", ctypes.c_long), ("bottom", ctypes.c_long),
+    ]
+
+
+def _primary_work_area(screen: Any) -> tuple[int, int, int, int]:
+    """Return primary Windows work area in pywebview's logical pixels."""
+    fallback = (
+        int(screen.x), int(screen.y),
+        int(screen.x + screen.width), int(screen.y + screen.height),
+    )
+    if os.name != "nt":
+        return fallback
+    rect = _Rect()
+    if not ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):
+        return fallback
+    scale = float(getattr(screen, "scale", 1) or 1)
+    physical_x = float(getattr(screen, "physical_x", screen.x * scale))
+    physical_y = float(getattr(screen, "physical_y", screen.y * scale))
+    return (
+        round(screen.x + (rect.left - physical_x) / scale),
+        round(screen.y + (rect.top - physical_y) / scale),
+        round(screen.x + (rect.right - physical_x) / scale),
+        round(screen.y + (rect.bottom - physical_y) / scale),
+    )
+
+
+def _focus_widget_position(work_area: tuple[int, int, int, int]) -> tuple[int, int]:
+    left, top, right, bottom = work_area
+    width, height = FOCUS_WIDGET_SIZE
+    return (
+        max(left, right - width - FOCUS_WIDGET_MARGIN),
+        max(top, bottom - height - FOCUS_WIDGET_MARGIN),
+    )
 
 
 def _message(title: str, text: str, *, error: bool = False) -> None:
@@ -77,7 +119,10 @@ def smoke_test(data_dir: Path | None = None) -> int:
         health = client.get("/api/health")
         page = client.get("/")
         icon = client.get("/assets/logo-32.png")
+        widget_html = load_focus_widget_html()
         if health.status_code != 200 or page.status_code != 200 or icon.status_code != 200:
+            return 1
+        if "window.pywebview.api.snapshot" not in widget_html or "focus-widget.css" in widget_html:
             return 1
         if "desktop-smoke-token" not in page.get_data(as_text=True):
             return 1
@@ -110,9 +155,14 @@ def run_desktop() -> int:
     webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
     webview.settings["OPEN_DEVTOOLS_IN_DEBUG"] = False
     icon = Path(__file__).resolve().parent / "web" / "assets" / "yantu.ico"
+    widget_x, widget_y = _focus_widget_position(_primary_work_area(webview.screens[0]))
+    widget_bridge = FocusWidgetBridge(
+        app.extensions["yantu_focus_service"], TaskService(paths.database)
+    )
     window = webview.create_window(
         "Yantu · 研途",
         app,
+        js_api=widget_bridge,
         width=1280,
         height=820,
         min_size=(390, 640),
@@ -120,7 +170,23 @@ def run_desktop() -> int:
         text_select=True,
         zoomable=True,
     )
-    del window
+    widget_window = webview.create_window(
+        "Yantu 专注小窗",
+        html=load_focus_widget_html(),
+        js_api=widget_bridge,
+        width=FOCUS_WIDGET_SIZE[0],
+        height=FOCUS_WIDGET_SIZE[1],
+        x=widget_x,
+        y=widget_y,
+        min_size=FOCUS_WIDGET_SIZE,
+        resizable=False,
+        hidden=True,
+        frameless=True,
+        easy_drag=False,
+        on_top=True,
+        background_color="#08151a",
+    )
+    widget_bridge._bind_windows(window, widget_window)
     try:
         webview.start(
             debug=False,

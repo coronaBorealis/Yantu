@@ -13,7 +13,7 @@ import time
 import uuid
 import webbrowser
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.request import urlopen
@@ -46,10 +46,11 @@ from .services.focus_habit_service import FocusHabitMonitor, FocusHabitService
 from .services.settings_service import SettingsService
 from .services.research_service import ResearchService
 from .services.project_service import ProjectService
+from .services.archive_service import ArchiveService
 
 
 RUNTIME_FILE = APP_PATHS.runtime_file
-ASSET_FILES = {"styles.css", "theme.css", "app.js"}
+ASSET_FILES = {"styles.css", "theme.css", "app.js", "focus-analytics.css", "focus-analytics.js"}
 BRAND_ASSETS = {
     "logo-master.png", "logo-512.png", "logo-192.png", "logo-64.png",
     "logo-32.png", "logo-16.png", "yantu.ico",
@@ -59,6 +60,13 @@ TASK_FIELDS = {
     "project_id",
     "title",
     "domain",
+    "task_kind",
+    "schedule_mode",
+    "scheduled_date",
+    "scheduled_start_time",
+    "scheduled_end_time",
+    "schedule_timezone",
+    "recurrence_until",
     "subcategory",
     "tags",
     "description",
@@ -100,6 +108,15 @@ def parse_date(value: Any, field: str) -> str | None:
         raise ValidationError(f"{field} must use YYYY-MM-DD") from error
 
 
+def parse_clock(value: Any, field: str) -> str | None:
+    if value in (None, ""):
+        return None
+    try:
+        return datetime.strptime(str(value), "%H:%M").strftime("%H:%M")
+    except ValueError as error:
+        raise ValidationError(f"{field} must use HH:MM") from error
+
+
 def normalize_task(payload: dict[str, Any], *, partial: bool = False) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValidationError("Request body must be a JSON object")
@@ -122,6 +139,18 @@ def normalize_task(payload: dict[str, Any], *, partial: bool = False) -> dict[st
             raise ValidationError("Invalid domain")
         clean["domain"] = domain
 
+    if not partial or "task_kind" in clean:
+        task_kind = str(clean.get("task_kind") or "standard")
+        if task_kind not in {"standard", "free_learning"}:
+            raise ValidationError("Invalid task kind")
+        clean["task_kind"] = task_kind
+
+    if not partial or "schedule_mode" in clean:
+        schedule_mode = str(clean.get("schedule_mode") or "flexible")
+        if schedule_mode not in {"flexible", "time_block"}:
+            raise ValidationError("Invalid schedule mode")
+        clean["schedule_mode"] = schedule_mode
+
     if not partial or "priority" in clean:
         priority = str(clean.get("priority", "medium"))
         if priority not in PRIORITIES:
@@ -134,9 +163,13 @@ def normalize_task(payload: dict[str, Any], *, partial: bool = False) -> dict[st
             raise ValidationError("Invalid status")
         clean["status"] = status
 
-    for field in ("start_date", "due_date"):
+    for field in ("start_date", "due_date", "scheduled_date", "recurrence_until"):
         if field in clean:
             clean[field] = parse_date(clean[field], field)
+
+    for field in ("scheduled_start_time", "scheduled_end_time"):
+        if field in clean:
+            clean[field] = parse_clock(clean[field], field)
 
     for field in ("estimated_minutes", "actual_minutes", "sort_order"):
         if field in clean:
@@ -178,6 +211,22 @@ def validate_schedule(task: dict[str, Any]) -> None:
     due_date = task.get("due_date")
     if start_date and due_date and start_date > due_date:
         raise ValidationError("Start date cannot be later than the due date")
+    if task.get("task_kind") == "free_learning" and due_date:
+        raise ValidationError("自由学习任务不使用截止日期")
+    if task.get("schedule_mode") == "time_block":
+        scheduled_date = task.get("scheduled_date")
+        start_time = task.get("scheduled_start_time")
+        end_time = task.get("scheduled_end_time")
+        if not scheduled_date or not start_time or not end_time:
+            raise ValidationError("时间段任务必须填写日期、开始时间和结束时间")
+        if end_time <= start_time:
+            raise ValidationError("时间段任务的结束时间必须晚于开始时间")
+        if task.get("is_recurring") and task.get("recurrence_rule") != "weekly":
+            raise ValidationError("时间段任务当前仅支持每周重复")
+        if task.get("is_recurring"):
+            recurrence_until = task.get("recurrence_until")
+            if not recurrence_until or recurrence_until < scheduled_date:
+                raise ValidationError("每周重复任务必须设置不早于首次日期的结束日期")
 
 
 def create_app(
@@ -204,6 +253,8 @@ def create_app(
         habit_monitor.start()
     research_service = ResearchService(db_path)
     project_service = ProjectService(db_path)
+    archive_service = ArchiveService(db_path)
+    archive_service.prepare(date.today())
     app.config.update(
         DB_PATH=str(db_path),
         JSON_AS_ASCII=False,
@@ -218,6 +269,7 @@ def create_app(
     app.register_blueprint(create_time_blueprint(db_path))
     app.register_blueprint(create_planning_blueprint(db_path))
     app.extensions["yantu_focus_habit_monitor"] = habit_monitor
+    app.extensions["yantu_focus_service"] = focus_service
     app.register_blueprint(create_focus_blueprint(db_path, focus_service, habit_service))
     app.register_blueprint(create_settings_blueprint(db_path, settings_service))
     app.register_blueprint(create_project_blueprint(db_path))
@@ -284,6 +336,19 @@ def create_app(
             }
         )
 
+    @app.get("/api/archive/periods")
+    def archive_periods():
+        return jsonify({"format": "yantu.archive.period.v1", "periods": archive_service.list_periods()})
+
+    @app.post("/api/archive/prepare")
+    def archive_prepare():
+        payload = request.get_json(silent=True) or {}
+        try:
+            periods = archive_service.prepare(payload.get("date") or date.today().isoformat())
+        except ValueError as error:
+            raise ValidationError("date must use YYYY-MM-DD") from error
+        return jsonify({"periods": periods}), 201
+
     @app.post("/api/shutdown")
     def shutdown():
         expected = app.config.get("SHUTDOWN_TOKEN")
@@ -316,8 +381,12 @@ def create_app(
 
     @app.post("/api/tasks")
     def tasks_create():
-        clean = normalize_task(request.get_json(silent=True) or {})
+        payload = request.get_json(silent=True) or {}
+        research_item_id = str(payload.get("research_item_id") or "").strip()
+        clean = normalize_task(payload)
         validate_schedule(clean)
+        if clean.get("task_kind") == "free_learning" and not clean.get("estimated_minutes"):
+            clean["estimated_minutes"] = 60
         now = utc_now()
         if clean.get("status") == "completed":
             clean["progress"] = 100
@@ -328,6 +397,13 @@ def create_app(
             "project_id": clean.get("project_id"),
             "title": clean["title"],
             "domain": clean.get("domain", "inbox"),
+            "task_kind": clean.get("task_kind", "standard"),
+            "schedule_mode": clean.get("schedule_mode", "flexible"),
+            "scheduled_date": clean.get("scheduled_date"),
+            "scheduled_start_time": clean.get("scheduled_start_time"),
+            "scheduled_end_time": clean.get("scheduled_end_time"),
+            "schedule_timezone": clean.get("schedule_timezone", "Asia/Shanghai"),
+            "recurrence_until": clean.get("recurrence_until"),
             "subcategory": clean.get("subcategory", ""),
             "tags": clean.get("tags", []),
             "description": clean.get("description", ""),
@@ -346,6 +422,12 @@ def create_app(
             "completed_at": clean.get("completed_at"),
             "sort_order": clean.get("sort_order", 0),
         }
+        if research_item_id:
+            try:
+                linked = research_service.create_linked_task(task, research_item_id)
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
+            return jsonify({"task": linked}), 201
         return jsonify({"task": task_service.create_record(task)}), 201
 
     @app.get("/api/tasks/<task_id>")
@@ -362,6 +444,8 @@ def create_app(
             return jsonify({"error": "Task not found"}), 404
         clean = normalize_task(request.get_json(silent=True) or {}, partial=True)
         validate_schedule({**existing, **clean})
+        if clean.get("task_kind", existing.get("task_kind")) == "free_learning" and not clean.get("estimated_minutes", existing.get("estimated_minutes")):
+            clean["estimated_minutes"] = 60
         resulting_status = clean.get("status", existing["status"])
         if resulting_status == "completed":
             clean["progress"] = 100
@@ -401,7 +485,7 @@ def create_app(
     def export_data():
         return jsonify(
             {
-                "version": 9,
+                "version": 13,
                 "exported_at": utc_now(),
                 "projects": [asdict(project) for project in project_service.list()],
                 "tasks": task_service.list_records(),
@@ -420,6 +504,7 @@ def create_app(
                 "focus_habits": habit_service.export_backup(),
                 "settings": settings_service.export_backup(),
                 "research": research_service.export_backup(),
+                "archive": archive_service.export_index(),
             }
         )
 
@@ -439,6 +524,8 @@ def create_app(
         for source in tasks:
             clean = normalize_task(source)
             validate_schedule(clean)
+            if clean.get("task_kind") == "free_learning" and not clean.get("estimated_minutes"):
+                clean["estimated_minutes"] = 60
             now = utc_now()
             if clean.get("status") == "completed":
                 clean["progress"] = 100
@@ -449,6 +536,13 @@ def create_app(
                 "project_id": clean.get("project_id"),
                 "title": clean["title"],
                 "domain": clean.get("domain", "inbox"),
+                "task_kind": clean.get("task_kind", "standard"),
+                "schedule_mode": clean.get("schedule_mode", "flexible"),
+                "scheduled_date": clean.get("scheduled_date"),
+                "scheduled_start_time": clean.get("scheduled_start_time"),
+                "scheduled_end_time": clean.get("scheduled_end_time"),
+                "schedule_timezone": clean.get("schedule_timezone", "Asia/Shanghai"),
+                "recurrence_until": clean.get("recurrence_until"),
                 "subcategory": clean.get("subcategory", ""),
                 "tags": clean.get("tags", []),
                 "description": clean.get("description", ""),
@@ -486,6 +580,13 @@ def create_app(
                 task_service.create_record({
                     "id": restore_id, "title": clean["title"],
                     "domain": clean.get("domain", "inbox"), "subcategory": clean.get("subcategory", ""),
+                    "task_kind": clean.get("task_kind", "standard"),
+                    "schedule_mode": clean.get("schedule_mode", "flexible"),
+                    "scheduled_date": clean.get("scheduled_date"),
+                    "scheduled_start_time": clean.get("scheduled_start_time"),
+                    "scheduled_end_time": clean.get("scheduled_end_time"),
+                    "schedule_timezone": clean.get("schedule_timezone", "Asia/Shanghai"),
+                    "recurrence_until": clean.get("recurrence_until"),
                     "tags": clean.get("tags", []), "description": clean.get("description", ""),
                     "created_at": str(source.get("created_at") or now), "updated_at": now,
                     "start_date": clean.get("start_date"), "due_date": clean.get("due_date"),

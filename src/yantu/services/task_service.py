@@ -78,6 +78,10 @@ class TaskService:
         for task in self.repository.list():
             if task.get("status") not in {"not_started", "in_progress", "waiting"}:
                 continue
+            if task.get("task_kind") == "free_learning":
+                continue
+            if task.get("schedule_mode") == "time_block":
+                continue
             estimated = max(0, int(task.get("estimated_minutes") or 0))
             actual = max(0, int(task.get("actual_minutes") or 0))
             remaining = max(0, estimated - actual)
@@ -158,6 +162,13 @@ class TaskService:
         )
         deadline = self._deadline(values.get("deadline"))
         estimated_hours = self._hours(values.get("estimated_hours", 0), "预计工时")
+        task_kind = str(values.get("task_kind") or "standard")
+        if task_kind not in {"standard", "free_learning"}:
+            raise ValueError("无效的任务方式")
+        if task_kind == "free_learning":
+            if deadline:
+                raise ValueError("自由学习任务不使用截止日期")
+            estimated_hours = estimated_hours or 1.0
         actual_hours = self._hours(values.get("actual_hours", 0), "实际工时")
         priority = TaskPriority.parse(values.get("priority"))
         status = TaskStatus.parse(values.get("status"))
@@ -172,6 +183,13 @@ class TaskService:
                 "project_id": project_id,
                 "title": title,
                 "domain": domain,
+                "task_kind": task_kind,
+                "schedule_mode": str(values.get("schedule_mode") or "flexible"),
+                "scheduled_date": values.get("scheduled_date"),
+                "scheduled_start_time": values.get("scheduled_start_time"),
+                "scheduled_end_time": values.get("scheduled_end_time"),
+                "schedule_timezone": str(values.get("schedule_timezone") or "Asia/Shanghai"),
+                "recurrence_until": values.get("recurrence_until"),
                 "subcategory": str(values.get("subcategory") or "").strip(),
                 "tags": list(values.get("tags") or []),
                 "description": str(values.get("description") or "").strip(),
@@ -194,9 +212,26 @@ class TaskService:
         return Task.from_record(record)
 
     def update(self, task_id: str, values: Mapping[str, Any]) -> Task | None:
-        if not self.repository.get(task_id):
+        existing = self.repository.get(task_id)
+        if not existing:
             return None
         changes: dict[str, Any] = {}
+        if "task_kind" in values:
+            task_kind = str(values["task_kind"] or "standard")
+            if task_kind not in {"standard", "free_learning"}:
+                raise ValueError("无效的任务方式")
+            changes["task_kind"] = task_kind
+        if "schedule_mode" in values:
+            schedule_mode = str(values.get("schedule_mode") or "flexible")
+            if schedule_mode not in {"flexible", "time_block"}:
+                raise ValueError("无效的日程方式")
+            changes["schedule_mode"] = schedule_mode
+        for field in (
+            "scheduled_date", "scheduled_start_time", "scheduled_end_time",
+            "schedule_timezone", "recurrence_until",
+        ):
+            if field in values:
+                changes[field] = values[field]
         if "title" in values:
             changes["title"] = self._title(values["title"])
         if "project_id" in values:
@@ -211,9 +246,13 @@ class TaskService:
             changes["parent_task_id"] = parent_id
         if "deadline" in values:
             changes["deadline"] = self._deadline(values["deadline"])
+        if changes.get("task_kind", existing.get("task_kind")) == "free_learning" and changes.get("deadline", existing.get("deadline")):
+            raise ValueError("自由学习任务不使用截止日期")
         for field, label in (("estimated_hours", "预计工时"), ("actual_hours", "实际工时")):
             if field in values:
                 changes[field] = self._hours(values[field], label)
+        if changes.get("task_kind", existing.get("task_kind")) == "free_learning" and not changes.get("estimated_hours", existing.get("estimated_hours")):
+            changes["estimated_hours"] = 1.0
         if "priority" in values:
             changes["priority"] = TaskPriority.parse(values["priority"]).value
         if "status" in values:

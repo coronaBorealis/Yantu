@@ -68,7 +68,7 @@ def test_v9_migration_adds_habit_tables_and_is_idempotent(tmp_path: Path) -> Non
     with sqlite3.connect(db_path) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
         assert {"focus_habit_profiles", "focus_habit_sessions", "focus_app_usage"} <= tables
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 13
 
 
 def test_habit_sampling_separates_allowed_idle_and_distraction(tmp_path: Path) -> None:
@@ -113,7 +113,12 @@ def test_habit_sampling_separates_allowed_idle_and_distraction(tmp_path: Path) -
     assert result["switch_count"] == 2
     assert result["violation_count"] == 1
     assert result["quality_score"] == 50
-    assert {item["process_name"] for item in result["apps"]} == {"code.exe", "chat.exe"}
+    apps = {item["process_name"]: item for item in result["apps"]}
+    assert set(apps) == {"code.exe", "chat.exe"}
+    assert apps["code.exe"]["active_seconds"] == 10
+    assert apps["code.exe"]["idle_seconds"] == 5
+    assert apps["chat.exe"]["active_seconds"] == 5
+    assert apps["chat.exe"]["is_allowed"] is False
     serialized = json.dumps(result, ensure_ascii=False).lower()
     for forbidden in ("keystroke", "window_title", "mouse_position", "screenshot", "url"):
         assert forbidden not in serialized
@@ -122,6 +127,54 @@ def test_habit_sampling_separates_allowed_idle_and_distraction(tmp_path: Path) -
     assert stats["active_seconds"] == 10
     assert stats["quality_score"] == 50
     assert stats["study_days"] == 1 and stats["current_streak_days"] == 1
+
+
+def test_default_tracking_records_active_and_idle_time_per_application(tmp_path: Path) -> None:
+    db_path = tmp_path / "default-tracking.db"
+    add_task(db_path)
+    clock = Clock()
+    probe = FakeProbe("code.exe")
+    habits = FocusHabitService(db_path, probe=probe, now=clock)
+    focus = FocusService(db_path, now=clock, habits=habits)
+
+    session = focus.start({"task_id": "habit-task", "mode": "free", "target_seconds": 0})
+    assert session["habit"]["profile_id"] is None
+    assert session["habit"]["profile_name"] == "基础前台应用记录"
+
+    clock.advance(5)
+    habits.sample_session(session["id"])
+    probe.process_name = "zotero.exe"
+    probe.idle_seconds = 90
+    clock.advance(5)
+    habits.sample_session(session["id"])
+    result = focus.complete(session["id"])["habit_result"]
+
+    assert result["active_seconds"] == 5
+    assert result["idle_seconds"] == 5
+    assert result["distraction_seconds"] == 0
+    apps = {item["process_name"]: item for item in result["apps"]}
+    assert apps["code.exe"]["active_seconds"] == 5
+    assert apps["code.exe"]["idle_seconds"] == 0
+    assert apps["zotero.exe"]["active_seconds"] == 0
+    assert apps["zotero.exe"]["idle_seconds"] == 5
+    assert all(item["is_allowed"] for item in apps.values())
+
+
+def test_default_tracking_can_be_explicitly_disabled(tmp_path: Path) -> None:
+    db_path = tmp_path / "tracking-disabled.db"
+    add_task(db_path)
+    clock = Clock()
+    habits = FocusHabitService(db_path, probe=FakeProbe(), now=clock)
+    focus = FocusService(db_path, now=clock, habits=habits)
+
+    session = focus.start({
+        "task_id": "habit-task",
+        "mode": "free",
+        "target_seconds": 0,
+        "monitor_apps": False,
+    })
+    assert "habit" not in session
+    assert habits.session(session["id"]) is None
 
 
 def test_unavailable_probe_degrades_without_blocking_focus(tmp_path: Path) -> None:

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "yantu"
 version = "0.2.1"
-description = "A local-first graduate student research and time management workbench"
+description = "A local-first research, coursework, and focus planner for graduate students"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 license = { text = "MIT" }

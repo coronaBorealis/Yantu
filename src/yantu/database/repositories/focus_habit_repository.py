@@ -174,6 +174,7 @@ class FocusHabitRepository:
             active_total = int(row["active_seconds"]) + active_seconds
             idle_total = int(row["idle_seconds"]) + idle_seconds
             distraction_total = int(row["distraction_seconds"]) + distraction_seconds
+            usage_active_seconds = active_seconds + distraction_seconds
             denominator = active_total + idle_total + distraction_total
             quality = round(active_total / denominator * 100) if denominator else 100
             connection.execute(
@@ -203,7 +204,7 @@ class FocusHabitRepository:
                     last_seen_at=excluded.last_seen_at
                 """,
                 (
-                    session_id, process_name, int(is_allowed), active_seconds,
+                    session_id, process_name, int(is_allowed), usage_active_seconds,
                     idle_seconds, sampled_at, sampled_at,
                 ),
             )

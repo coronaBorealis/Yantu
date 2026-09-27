@@ -111,6 +111,30 @@ class SettingsService:
         self.repository.set("focus.preferences", normalized, utc_now())
         return normalized
 
+    def get_focus_draft(self) -> dict[str, Any] | None:
+        saved = self.repository.get("focus.draft")
+        return saved if isinstance(saved, dict) else None
+
+    def update_focus_draft(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        preset = str(values.get("preset") or "planning")
+        mode = str(values.get("mode") or "pomodoro")
+        if preset not in {"planning", "25", "50", "custom", "free"} or mode not in {"pomodoro", "free"}:
+            raise ValueError("专注选项无效")
+        raw_minutes = values.get("minutes")
+        try:
+            minutes = None if raw_minutes in (None, "") else int(raw_minutes)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("专注分钟数无效") from exc
+        if minutes is not None and not 1 <= minutes <= 720:
+            raise ValueError("专注分钟数应在 1 到 720 之间")
+        normalized = {
+            "taskId": str(values.get("taskId") or "")[:100],
+            "preset": preset, "mode": mode, "minutes": minutes,
+            "habitProfileId": str(values.get("habitProfileId") or "__default__")[:100],
+        }
+        self.repository.set("focus.draft", normalized, utc_now())
+        return normalized
+
     def _stored_ai(self) -> dict[str, Any]:
         value = self.repository.get("ai.config", {})
         return self._normalize_ai({**AI_DEFAULTS, **(value if isinstance(value, dict) else {})})
@@ -196,6 +220,7 @@ class SettingsService:
     def export_backup(self) -> dict[str, Any]:
         return {
             "focus.preferences": self.get_preferences(),
+            "focus.draft": self.get_focus_draft(),
             "ai.config": self._stored_ai(),
             "onboarding.status": self.repository.get("onboarding.status", "skipped"),
             "onboarding.version": self.repository.get("onboarding.version", 1),
@@ -206,6 +231,8 @@ class SettingsService:
             return
         if isinstance(values.get("focus.preferences"), Mapping):
             self.update_preferences(values["focus.preferences"])
+        if isinstance(values.get("focus.draft"), Mapping):
+            self.update_focus_draft(values["focus.draft"])
         if isinstance(values.get("ai.config"), Mapping):
             config = self._normalize_ai({**AI_DEFAULTS, **values["ai.config"]})
             self.repository.set("ai.config", config, utc_now())

@@ -1,0 +1,18 @@
+:root{color-scheme:dark;font-family:"Microsoft YaHei UI",system-ui,sans-serif}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:#08151a;color:#e8fcf5;overflow:hidden}
+main{height:100%;padding:12px;display:flex;flex-direction:column;background:radial-gradient(circle at 50% 44%,#1a3d3f,#08151a 75%);border:1px solid #4c9884}
+.widget-head{display:flex;justify-content:space-between;align-items:center;color:#81ceb8;font:700 9px ui-monospace,"Cascadia Code",monospace;letter-spacing:.12em}
+button{font:inherit;cursor:pointer}
+.widget-head button{border:0;background:transparent;color:#c3e9dd;font-size:18px;padding:0 4px}
+.widget-core{flex:1;display:grid;place-items:center;min-height:0}
+.widget-orbit{width:132px;height:132px;border-radius:50%;display:flex;flex-direction:column;justify-content:center;align-items:center;border:2px solid #6ce4c4;box-shadow:0 0 18px #2dc39a33,inset 0 0 26px #2dc39a22;background:repeating-linear-gradient(0deg,transparent 0 5px,#6ce4c40b 6px)}
+.widget-orbit time{font:600 31px ui-monospace,"Cascadia Code",monospace;letter-spacing:-.04em}
+.widget-orbit span{margin-top:4px;color:#a8d3c5;font-size:10px}
+#task{margin:0 0 12px;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+.widget-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.widget-actions button{border:1px solid #529681;border-radius:8px;padding:7px 3px;background:#153831;color:#e8fcf5;font-size:11px}
+.widget-actions button:disabled{opacity:.45;cursor:default}
+.widget-actions button:focus-visible,.widget-head button:focus-visible{outline:2px solid #9ef8df;outline-offset:2px}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}

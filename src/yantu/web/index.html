@@ -15,8 +15,9 @@
       if(cached){document.documentElement.dataset.theme=cached.resolved_mode||cached.mode||'light';document.documentElement.dataset.preset=cached.preset||'forest'}
     } catch (_) {}
   </script>
-  <link rel="stylesheet" href="styles.css?v=20260831.1">
-  <link rel="stylesheet" href="theme.css?v=20260831.1">
+  <link rel="stylesheet" href="styles.css?v=20260916.4">
+  <link rel="stylesheet" href="focus-analytics.css?v=20260916.4">
+  <link rel="stylesheet" href="theme.css?v=20260916.1">
 </head>
 <body>
   <div class="app-shell">
@@ -29,10 +30,14 @@
         <button class="nav-item" data-view="research"><i class="dot research"></i>科研 <b id="count-research">0</b></button>
         <button class="nav-item" data-view="course"><i class="dot course"></i>课程 <b id="count-course">0</b></button>
         <button class="nav-item" data-view="personal"><i class="dot personal"></i>个人 <b id="count-personal">0</b></button>
+        <p class="nav-label">学习</p>
+        <button class="nav-item" data-view="free_learning"><span>∞</span>自由学习 <b id="count-free-learning">0</b></button>
         <p class="nav-label">规划</p>
         <button class="nav-item" data-view="week"><span>▦</span>未来 7 天</button>
         <button class="nav-item" data-view="month"><span>□</span>月历</button>
         <button class="nav-item" data-view="schedule"><span>▤</span>课表</button>
+        <p class="nav-label">复盘</p>
+        <button class="nav-item" data-view="focus_analytics"><span>◷</span>专注分析</button>
           <button class="nav-item" data-view="ai"><span>◇</span>AI 任务拆解</button>
           <button class="nav-item" data-view="research_library"><span>⌘</span>科研文献</button>
         <button class="nav-item" data-view="trash"><span>♲</span>回收站</button>
@@ -47,6 +52,7 @@
       <header class="topbar">
         <button class="menu-btn" id="menu-btn" aria-label="打开菜单">☰</button>
         <div><p id="date-label"></p><h1 id="view-title">今日</h1></div>
+        <button class="semester-indicator hidden" id="semester-indicator" type="button" title="查看或修改当前学期"></button>
         <div class="top-actions">
           <label class="compact-field"><span>状态</span><select id="status-filter"><option value="all">全部状态</option><option value="not_started">未开始</option><option value="in_progress">进行中</option><option value="waiting">等待</option><option value="completed">已完成</option><option value="cancelled">已取消</option></select></label>
           <label class="compact-field"><span>子分类</span><select id="subcategory-filter"><option value="all">全部</option></select></label>
@@ -60,18 +66,24 @@
 
   <dialog id="task-dialog">
     <form id="task-form">
-      <div class="dialog-head"><div><p>把想法变成下一步行动</p><h2 id="dialog-title">新建任务</h2></div><button type="button" class="icon-btn" id="close-dialog" aria-label="关闭">×</button></div>
+      <div class="dialog-head"><div><p>把想法变成下一步行动</p><h2 id="dialog-title">新建任务</h2></div><button type="button" class="secondary-btn" id="open-quick-reading">快速阅读</button><button type="button" class="icon-btn" id="close-dialog" aria-label="关闭">×</button></div>
       <input type="hidden" id="task-id">
       <label class="field full"><span>标题 *</span><input id="task-title" required maxlength="160" placeholder="例如：整理本周实验结果并准备组会汇报" autofocus></label>
       <div class="form-grid">
         <label class="field"><span>一级领域 *</span><select id="task-domain"><option value="research">科研</option><option value="course">课程</option><option value="personal">个人</option><option value="inbox">收件箱（稍后整理）</option></select></label>
         <label class="field"><span>二级分类 / 标签</span><input id="task-subcategory" maxlength="60" placeholder="论文阅读、实验、作业……"></label>
       </div>
+      <label class="field full"><span>任务方式</span><select id="task-kind"><option value="standard">目标任务（可设截止日期）</option><option value="free_learning">自由学习（按节奏持续投入）</option><option value="time_block">时间段占用（课程、会议等）</option></select><small id="task-kind-hint">目标任务按日期参与每日规划。</small></label>
+      <div id="task-time-block-fields" class="time-block-fields hidden">
+        <div class="form-grid three"><label class="field"><span>占用日期 *</span><input type="date" id="task-block-date"></label><label class="field"><span>开始时间 *</span><input type="time" id="task-block-start"></label><label class="field"><span>结束时间 *</span><input type="time" id="task-block-end"></label></div>
+        <div class="form-grid"><label class="switch-row compact"><span><b>每周重复</b><small>按首次日期的星期重复</small></span><input type="checkbox" id="task-block-weekly"></label><label class="field" id="task-block-until-field"><span>重复至</span><input type="date" id="task-block-until" disabled></label></div>
+      </div>
       <div class="form-grid three">
-        <label class="field"><span>截止日期</span><input type="date" id="task-due-date"></label>
+        <label class="field" id="task-due-field"><span>截止日期</span><input type="date" id="task-due-date"></label>
         <label class="field"><span>预计耗时（分钟）</span><input type="number" id="task-estimated" min="0" max="100000" step="5" value="60"></label>
         <label class="field"><span>优先级</span><select id="task-priority"><option value="urgent">紧急</option><option value="high">高</option><option value="medium" selected>中</option><option value="low">低</option></select></label>
       </div>
+      <label class="field full hidden" id="task-paper-field"><span>关联已保存论文（可选）</span><select id="task-paper"><option value="">不关联论文</option></select><small>选择后，任务会归入该论文的阅读历史，便于定期复盘。</small></label>
       <details class="advanced-settings">
         <summary>更多设置 <span>描述、状态、标签、重复和实际耗时</span></summary>
         <label class="field full"><span>描述</span><textarea id="task-description" rows="2" maxlength="1000" placeholder="任务背景、完成标准或下一步行动"></textarea></label>
@@ -88,6 +100,16 @@
         <label class="field full"><span>备注</span><textarea id="task-notes" rows="2" maxlength="1000" placeholder="资料位置、临时提醒或复盘记录"></textarea></label>
       </details>
       <div class="dialog-actions"><button type="button" class="danger-btn hidden" id="delete-btn">删除任务</button><span></span><button type="button" class="secondary-btn" id="cancel-btn">取消</button><button type="submit" class="primary-btn">保存任务</button></div>
+    </form>
+  </dialog>
+  <dialog id="quick-reading-dialog">
+    <form id="quick-reading-form">
+      <div class="dialog-head"><div><p>先读起来，历史会留在论文下</p><h2>快速开始论文阅读</h2></div><button type="button" class="icon-btn" id="close-quick-reading" aria-label="关闭">×</button></div>
+      <label class="field full"><span>查找已保存论文</span><input type="search" id="quick-paper-search" placeholder="输入题目关键词"></label>
+      <label class="field full"><span>论文 *</span><select id="quick-paper" required></select></label>
+      <label class="field full"><span>任务标题（仅首次创建可选）</span><input id="quick-task-title" maxlength="160" placeholder="留空则使用“阅读：论文题目”"></label>
+      <p class="form-hint">首次建立 60 分钟自由学习任务；再次选择同一篇论文会接续未结项任务。达到当前上限后自动延长，阅读时间会持续留档。</p>
+      <div class="dialog-actions"><span></span><button type="button" class="secondary-btn" id="cancel-quick-reading">取消</button><button type="submit" class="primary-btn">开始或继续阅读</button></div>
     </form>
   </dialog>
   <dialog id="settings-dialog" class="settings-dialog">
@@ -163,6 +185,7 @@
   <dialog id="research-import-dialog" class="research-import-dialog">
     <form id="research-import-form">
       <div class="dialog-head"><div><p>预览后再写入项目</p><h2>从 Zotero 导入论文</h2></div><button type="button" class="icon-btn" id="close-research-import" aria-label="关闭">×</button></div>
+      <div class="research-import-body">
       <div class="form-grid">
         <label class="field"><span>科研项目 *</span><select id="research-import-project" required></select></label>
         <label class="field"><span>Zotero 来源 *</span><select id="research-import-source" required></select></label>
@@ -173,7 +196,9 @@
         <label class="field hidden" id="research-search-field"><span>标题、作者或年份</span><input id="research-import-query" maxlength="200" placeholder="例如：single photon lidar"></label>
       </div>
       <label class="switch-row" id="research-subcollections-row"><span><b>包含子文件夹</b><small>自动合并子文件夹中的论文并去重</small></span><input type="checkbox" id="research-include-subcollections" checked></label>
+      <label class="switch-row" id="research-organize-row"><span><b>在研途保留文件夹层级</b><small>导入后按 Zotero 文件夹和子文件夹浏览论文</small></span><input type="checkbox" id="research-organize" checked></label>
       <div id="research-import-preview" class="research-import-preview"><div class="empty"><strong>选择范围后开始预览</strong>预览不会写入 Yantu，也不会修改 Zotero。</div></div>
+      </div>
       <div class="dialog-actions"><button type="button" class="secondary-btn" id="cancel-research-import">取消</button><span></span><button type="button" class="secondary-btn" id="preview-research-import">读取预览</button><button type="submit" class="primary-btn" id="confirm-research-import" disabled>导入所选论文</button></div>
     </form>
   </dialog>
@@ -181,16 +206,28 @@
     <form id="schedule-form">
       <div class="dialog-head"><div><p>本地解析，不上传云端</p><h2>导入课表</h2></div><button type="button" class="icon-btn" id="close-schedule-dialog" aria-label="关闭">×</button></div>
       <div id="schedule-step-input">
-        <label class="field"><span>课表文件 *</span><input type="file" id="schedule-file" accept=".png,.jpg,.jpeg,.xlsx,.csv" required></label>
-        <div class="form-grid three">
+        <label class="field"><span>课表文件 *</span><input type="file" id="schedule-file" accept=".pdf,.png,.jpg,.jpeg,.xlsx,.csv" required></label>
+        <div class="form-grid">
           <label class="field"><span>学期名称 *</span><input id="semester-name" required placeholder="2026 秋季学期"></label>
-          <label class="field"><span>学期开始 *</span><input type="date" id="semester-start" required></label>
+          <label class="field"><span>学期阶段 *</span><input id="semester-stage" required placeholder="例如：研一上"></label>
+          <label class="field"><span>第 1 周星期一 *</span><input type="date" id="semester-start" required></label>
           <label class="field"><span>学期结束 *</span><input type="date" id="semester-end" required></label>
         </div>
-        <p class="form-hint">支持 PNG/JPG、XLSX、CSV，最大 10 MB。图片首次识别需要初始化本地 OCR 模型。</p>
+        <label class="semester-confirm"><input type="checkbox" id="semester-start-confirm" required><span>我已确认该日期是教学第 1 周的星期一；以后可点击页面顶部的学期指示修改。</span></label>
+        <p class="form-hint">支持 PDF、PNG/JPG、XLSX、CSV，最大 10 MB。PDF 与图片首次识别需要初始化本地 OCR 模型。</p>
         <div class="dialog-actions"><span></span><button type="button" class="secondary-btn" id="cancel-schedule">取消</button><button type="submit" class="primary-btn" id="recognize-schedule">识别并预览</button></div>
       </div>
       <div id="schedule-preview" class="hidden"></div>
+    </form>
+  </dialog>
+  <dialog id="semester-dialog">
+    <form id="semester-form">
+      <div class="dialog-head"><div><p>修改后只重新计算课程日期</p><h2>当前学期</h2></div><button type="button" class="icon-btn" id="close-semester-dialog" aria-label="关闭">×</button></div>
+      <input type="hidden" id="edit-semester-id">
+      <div class="form-grid"><label class="field"><span>学期名称 *</span><input id="edit-semester-name" required></label><label class="field"><span>学期阶段 *</span><input id="edit-semester-stage" required placeholder="研一上"></label></div>
+      <div class="form-grid"><label class="field"><span>第 1 周星期一 *</span><input type="date" id="edit-semester-start" required></label><label class="field"><span>学期结束 *</span><input type="date" id="edit-semester-end" required></label></div>
+      <p class="form-hint">第 1 周第一天只决定课程周次对应的日期，不改变任务、专注记录或归档时间。</p>
+      <div class="dialog-actions"><span></span><button type="button" class="secondary-btn" id="cancel-semester-edit">取消</button><button type="submit" class="primary-btn">保存学期</button></div>
     </form>
   </dialog>
   <dialog id="course-dialog">
@@ -240,6 +277,7 @@
   <section id="focus-panel" class="focus-panel hidden" aria-label="专注计时器" aria-live="polite"></section>
   <div id="context-menu" class="context-menu hidden" role="menu" aria-label="快捷操作"></div>
   <div class="toast" id="toast" role="status"><span id="toast-text"></span><button id="toast-action" class="hidden"></button></div>
-  <script src="app.js?v=20260831.2"></script>
+  <script src="focus-analytics.js?v=20260916.4"></script>
+  <script src="app.js?v=20260916.4"></script>
 </body>
 </html>

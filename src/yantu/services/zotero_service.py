@@ -400,6 +400,11 @@ class ZoteroService:
             "mode": mode,
             "collection_key": collection_key,
             "query": query,
+            "include_subcollections": bool(values.get("include_subcollections", True))
+                if mode == "collection" else False,
+            "collections": [item for item in collections if item["key"] in keys]
+                if mode == "collection" else [],
+            "all_collections": collections if mode == "collection" else [],
             "items": candidates,
             "count": len(candidates),
             "truncated": len(seen) >= 500,
@@ -421,6 +426,19 @@ class ZoteroService:
         if len(item_keys) > 500:
             raise ValueError("单次最多导入 500 篇论文")
 
+        organized_preview = None
+        if mode == "collection" and bool(values.get("organize_by_collection", False)):
+            root_key = str(values.get("collection_key") or "")
+            if not root_key:
+                raise ValueError("请选择 Zotero 文件夹")
+            organized_preview = self.preview_project_import(source_id, {
+                "mode": "collection", "collection_key": root_key,
+                "include_subcollections": bool(values.get("include_subcollections", True)),
+            })
+            valid_keys = {item["external_key"] for item in organized_preview["items"]}
+            if not set(item_keys) <= valid_keys:
+                raise ValueError("所选论文已不在该 Zotero 文件夹中，请重新预览")
+
         saved_ids: list[str] = []
         for start in range(0, len(item_keys), 50):
             chunk = item_keys[start : start + 50]
@@ -432,6 +450,9 @@ class ZoteroService:
             )
             for raw in raw_items:
                 data = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+                returned_key = str(raw.get("key") or data.get("key") or "")
+                if returned_key not in chunk:
+                    continue
                 item_type = str(data.get("itemType") or "")
                 if item_type in SKIPPED_ITEM_TYPES or data.get("deleted"):
                     continue
@@ -439,6 +460,10 @@ class ZoteroService:
                 mapped["add_to_inbox"] = False
                 saved = self.research.save_item(mapped)
                 saved_ids.append(str(saved["id"]))
+        if organized_preview is not None:
+            self.research.import_collection_folders(
+                project_id, source_id, organized_preview["all_collections"], root_key, saved_ids
+            )
         linked = self.research.link_project_items(
             project_id,
             saved_ids,
@@ -453,6 +478,7 @@ class ZoteroService:
             "imported_count": linked,
             "existing_count": len(set(saved_ids)) - linked,
             "items": self.research.list_project_items(project_id),
+            "folders": self.research.list_folders(project_id),
         }
 
     def _get_paginated(

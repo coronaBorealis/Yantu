@@ -48,6 +48,15 @@ class YantuApiTests(unittest.TestCase):
         self.assertIn("yantu.focus.draft.v1", script)
         self.assertIn("use_planning_profile", script)
         self.assertIn("save-planning-profile", html)
+        self.assertIn("基础监测（默认，无需方案）", script)
+        self.assertIn("应用明细", script)
+        self.assertIn("已过期", script)
+        self.assertIn("taskDeadline", script)
+        self.assertIn("openDesktopFocusWidget", script)
+        self.assertIn("research-import-body", html)
+        self.assertIn("#research-import-form>.dialog-actions", styles)
+        self.assertIn(".context-menu{max-width:calc(100vw - 16px);max-height", styles)
+        self.assertIn(".focus-panel:not(.immersive){max-height", styles)
         self.assertIn(".sidebar nav", styles)
 
     def test_task_crud_and_all_mvp_fields(self):
@@ -147,7 +156,7 @@ class YantuApiTests(unittest.TestCase):
     def test_backup_export_and_import(self):
         self.client.post("/api/tasks", json={"title": "课程项目", "domain": "course"})
         backup = self.client.get("/api/export").get_json()
-        self.assertEqual(backup["version"], 9)
+        self.assertEqual(backup["version"], 13)
         self.assertEqual(len(backup["tasks"]), 1)
 
         other_db = Path(self.temp_dir.name) / "restored.db"

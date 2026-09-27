@@ -89,6 +89,7 @@ class Task:
     parent_task_id: str | None
     created_at: str
     updated_at: str
+    task_kind: str = "standard"
 
     @classmethod
     def from_record(cls, record: Mapping[str, Any]) -> "Task":
@@ -106,6 +107,7 @@ class Task:
             ),
             created_at=str(record["created_at"]),
             updated_at=str(record["updated_at"]),
+            task_kind=str(record.get("task_kind") or "standard"),
         )
 
 

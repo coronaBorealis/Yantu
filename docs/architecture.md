@@ -77,7 +77,7 @@ sequenceDiagram
 
 Task 和 Course 使用 `deleted_at` 软删除。常规查询统一排除回收站条目；恢复会清空该字段，只有回收站中的条目才能永久删除。前端右键菜单和移动端“⋯”菜单调用相同 API，并通过短时撤销降低误删风险。
 
-备份格式版本为 `9`，包含项目、课程、学期、课程例外、回收站任务、规划偏好、已确认规划批次、已结束专注历史、专注习惯方案与应用时长汇总、科研文献关联和允许备份的非秘密设置，同时继续接受旧版仅包含 `tasks` 的备份。DeepSeek/Zotero API Key、活动中的计时和本机请求令牌永不导出。
+备份格式版本为 `10`，包含项目、课程、学期、课程例外、回收站任务、规划偏好、已确认规划批次、已结束专注历史、专注习惯方案与应用时长汇总、科研文献关联、论文类目和允许备份的非秘密设置，同时继续接受旧版仅包含 `tasks` 的备份。DeepSeek/Zotero API Key、活动中的计时和本机请求令牌永不导出。
 
 ## 每日容量与专注计时
 
@@ -123,13 +123,17 @@ sequenceDiagram
 
 ### 专注习惯监测与隐私边界
 
-专注习惯监测是每轮显式选择的可选能力。`FocusHabitMonitor` 只在源码服务或桌面应用的真实运行入口启动，测试用应用工厂默认不创建后台线程。它每 5 秒读取一次 Windows 前台进程名，并通过系统“距上次输入时间”判断用户是否仍活跃；暂停、等待确认和休息期间只移动采样锚点，不累计时长。
+专注习惯监测默认以基础模式启用，用户也可以为每轮选择筛选方案或明确关闭。`FocusHabitMonitor` 只在源码服务或桌面应用的真实运行入口启动，测试用应用工厂默认不创建后台线程。它每 5 秒读取一次 Windows 前台进程名，并通过系统“距上次输入时间”判断用户是否仍活跃；暂停、等待确认和休息期间只移动采样锚点，不累计时长。
+
+即使用户没有创建筛选方案，FocusService 也会为专注会话建立 `profile_id = NULL` 的基础监测快照。基础监测将所有前台进程视为可记录应用，按进程累计输入活跃和空闲时长，不产生“非目标应用”判定；用户仍可通过 `monitor_apps: false` 显式关闭。选择自定义方案时，原有目标/非目标应用分类继续生效。
 
 | 实体 | 职责 |
 | --- | --- |
 | `focus_habit_profiles` | 目标应用、空闲阈值和切换提醒阈值；可停用但不破坏历史 |
 | `focus_habit_sessions` | 每轮方案快照、有效/空闲/非目标时长、切换次数和质量分 |
 | `focus_app_usage` | 按进程名聚合本轮时长；不保存窗口标题、文件路径或 URL |
+
+`focus_app_usage.active_seconds` 与 `idle_seconds` 均按 `session_id + process_name` 关联；前者记录该进程获得前台焦点且用户仍在输入的时长，无论它是否属于自定义方案的目标应用。因此专注结束响应可以直接生成完整的逐应用复盘，而不需要解析日志或建立第二套统计表。
 
 Windows 适配器使用前台窗口所属进程与 `GetLastInputInfo`。输入信号只回答“多久没有任何输入”，不会读取或保存键入内容、鼠标坐标、滚动方向、截图、文档名或浏览内容。系统不支持或采样失败时，该轮标记为 `unavailable`，FocusSession 和 TimeEntry 状态机继续正常工作。每次采样最多计入 30 秒，避免休眠或调试暂停被误算为学习时间。
 
@@ -141,7 +145,7 @@ Windows 适配器使用前台窗口所属进程与 `GetLastInputInfo`。输入�
 
 ### 多任务规划数据合同
 
-规划层使用四类持久化实体，数据库 `user_version = 9`：
+规划层使用四类持久化实体，当前数据库 `user_version = 13`：
 
 | 实体 | 职责 |
 | --- | --- |
@@ -197,6 +201,8 @@ v7 在 v6 本地数据合同上增加只读 Zotero 适配器；v8 增加科研�
 `zotero_uri` 只接受 `zotero://select/...` 本地直达链接。论文转任务遵循 Preview/Confirm：预览不写库；确认时在一个事务中创建 Task、写入 `task_research_items` 并将收件箱状态改为 `converted`，重复确认返回原任务。
 
 项目论文导入同样遵循 Preview/Confirm。预览直接读取 Zotero 的 Collection 或 `q` 快速检索结果，不写 Yantu；确认阶段按选中的 Item Key 重新读取题录、幂等 upsert `research_items`，再写入 `project_research_items`。文件夹模式可以递归读取子 Collection，同一论文出现在多个文件夹时按 Item Key 去重。该流程不把论文自动转换成任务，也不写回 Zotero。
+
+Schema v12 的 `tasks.task_kind` 区分普通目标任务与 `free_learning`。自由学习任务不使用截止日期，也不参与按日期自动分摊；首次快速阅读建立 60 分钟学习段，同一论文再次快速开始会在一个事务中复用未结项任务。专注倒计时达到当前学习段上限时，`FocusService` 延长一小时并保留实际计时，任务预计时长随累计投入扩展；普通目标任务仍按到时确认流程结束。
 
 Zotero 接口：
 
@@ -270,7 +276,7 @@ sequenceDiagram
 - `AppPaths` 是运行路径的唯一解析入口：显式 `YANTU_DATA_DIR` 优先；冻结安装版使用 `%LOCALAPPDATA%\Yantu`；源码开发使用仓库 `data/`。
 - 只读资源（Python 包、HTML/CSS/JS、Logo）与可写数据（SQLite、外观、日志、运行状态）分离，业务代码不再自行推导仓库根目录。
 - DeepSeek API Key 默认通过 `keyring` 保存到 Windows Credential Manager，服务名 `Yantu`、账户名 `deepseek:default`；`DEEPSEEK_API_KEY` 环境变量优先。
-- `app_settings` 只保存非秘密 JSON 设置，包括专注偏好及未来新手引导标记。
+- `app_settings` 保存非秘密 JSON 设置，包括专注偏好、计时选项草稿和新手引导标记。旧网页草稿首次启动时迁入 SQLite，之后网页与桌面端通过同一接口读取。
 - 服务每次启动生成随机请求令牌并注入首屏；所有本地修改型 `/api/*` 请求必须携带匹配的 `X-Yantu-Token`。
 - 默认数据库（源码开发）：`data/yantu.db`
 - 运行状态（源码开发）：`data/runtime.json`
@@ -284,3 +290,10 @@ sequenceDiagram
 - PyInstaller 使用 `onedir`，避免 onefile 临时解压目录被误当作可写数据目录；Inno Setup 仅为当前用户安装到 `%LOCALAPPDATA%\Programs\Yantu`，无需管理员权限。
 - 安装版的持久数据始终位于 `%LOCALAPPDATA%\Yantu`。覆盖升级或卸载只处理程序资源，不删除任务数据库、背景或 WebView 状态。
 - 构建脚本依次执行冻结程序自检、安装器编译、静默安装、已安装程序自检和静默卸载，并生成 SHA-256；标签工作流只在测试与上述检查全部通过后保存 Actions Artifact，面向普通用户的稳定安装器和校验文件同步在仓库 `downloads/`。
+## Schema v13：时间占用、学期上下文与归档层
+
+Schema v13 为 Task 增加 `schedule_mode`、日期、起止时间、时区和重复结束日期。`time_block` 任务与 CourseMeeting 统一展开为 CalendarEvent；规划器只依赖事件接口，因此课程、会议和其他固定占用使用同一套避让逻辑。任务的 `task_kind` 继续表达目标任务或自由学习，避免把学习驱动方式与日历占用混为一谈。
+
+Semester 的 `start_date` 明确定义为“教学第 1 周第一天”，只参与 CourseMeeting 的周次换算。`stage_label` 用于显示研一上、研一下等培养阶段。CourseMeeting 支持教师和地点覆盖，以表达同一课程在不同周次更换教师或教室。
+
+本地归档由 `archive_periods`、`archive_entries` 和用户数据目录下的 `archive/` 共同组成。当前版本仅准备周期索引与格式，不移动实时数据。完整规范见 [archive-format.md](archive-format.md)。
