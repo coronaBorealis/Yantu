@@ -15,6 +15,7 @@ dependencies = [
   "python-dotenv>=1.1,<2",
   "keyring>=25,<26",
   "openpyxl>=3.1,<4",
+  "tzdata>=2025.2; platform_system == 'Windows'",
 ]
 
 [project.optional-dependencies]
