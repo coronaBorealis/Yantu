@@ -61,12 +61,16 @@ TASK_FIELDS = {
     "title",
     "domain",
     "task_kind",
+    "is_theme",
     "schedule_mode",
     "scheduled_date",
     "scheduled_start_time",
     "scheduled_end_time",
     "schedule_timezone",
     "recurrence_until",
+    "submission_required",
+    "submission_material",
+    "submission_submitted",
     "subcategory",
     "tags",
     "description",
@@ -145,6 +149,11 @@ def normalize_task(payload: dict[str, Any], *, partial: bool = False) -> dict[st
             raise ValidationError("Invalid task kind")
         clean["task_kind"] = task_kind
 
+    if "is_theme" in clean:
+        if not isinstance(clean["is_theme"], (bool, int)) or clean["is_theme"] not in (0, 1):
+            raise ValidationError("is_theme 必须是布尔值")
+        clean["is_theme"] = int(bool(clean["is_theme"]))
+
     if not partial or "schedule_mode" in clean:
         schedule_mode = str(clean.get("schedule_mode") or "flexible")
         if schedule_mode not in {"flexible", "time_block"}:
@@ -199,6 +208,24 @@ def normalize_task(payload: dict[str, Any], *, partial: bool = False) -> dict[st
         if field in clean:
             clean[field] = str(clean[field] or "").strip()
 
+    if "submission_required" in clean:
+        if not isinstance(clean["submission_required"], (bool, int)) or clean["submission_required"] not in (0, 1):
+            raise ValidationError("submission_required 必须是布尔值")
+        clean["submission_required"] = int(bool(clean["submission_required"]))
+        if not clean["submission_required"]:
+            clean["submission_material"] = ""
+            clean["submission_completed_at"] = None
+    if "submission_material" in clean:
+        material = str(clean["submission_material"] or "").strip()
+        if len(material) > 200:
+            raise ValidationError("待提交资料不能超过 200 个字符")
+        clean["submission_material"] = material
+    if "submission_submitted" in clean:
+        if not isinstance(clean["submission_submitted"], bool):
+            raise ValidationError("submission_submitted 必须是布尔值")
+        submitted = bool(clean.pop("submission_submitted"))
+        clean["submission_completed_at"] = utc_now() if submitted else None
+
     if "is_recurring" in clean:
         clean["is_recurring"] = int(bool(clean["is_recurring"]))
 
@@ -207,6 +234,10 @@ def normalize_task(payload: dict[str, Any], *, partial: bool = False) -> dict[st
 
 
 def validate_schedule(task: dict[str, Any]) -> None:
+    if task.get("submission_material") and not task.get("submission_required"):
+        raise ValidationError("请先启用待提交资料")
+    if task.get("submission_completed_at") and not task.get("submission_required"):
+        raise ValidationError("未启用待提交资料时不能标记已提交")
     start_date = task.get("start_date")
     due_date = task.get("due_date")
     if start_date and due_date and start_date > due_date:
@@ -398,12 +429,16 @@ def create_app(
             "title": clean["title"],
             "domain": clean.get("domain", "inbox"),
             "task_kind": clean.get("task_kind", "standard"),
+            "is_theme": clean.get("is_theme", 0),
             "schedule_mode": clean.get("schedule_mode", "flexible"),
             "scheduled_date": clean.get("scheduled_date"),
             "scheduled_start_time": clean.get("scheduled_start_time"),
             "scheduled_end_time": clean.get("scheduled_end_time"),
             "schedule_timezone": clean.get("schedule_timezone", "Asia/Shanghai"),
             "recurrence_until": clean.get("recurrence_until"),
+            "submission_required": clean.get("submission_required", 0),
+            "submission_material": clean.get("submission_material", ""),
+            "submission_completed_at": clean.get("submission_completed_at"),
             "subcategory": clean.get("subcategory", ""),
             "tags": clean.get("tags", []),
             "description": clean.get("description", ""),
@@ -428,7 +463,10 @@ def create_app(
             except ValueError as exc:
                 raise ValidationError(str(exc)) from exc
             return jsonify({"task": linked}), 201
-        return jsonify({"task": task_service.create_record(task)}), 201
+        try:
+            return jsonify({"task": task_service.create_record(task)}), 201
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
 
     @app.get("/api/tasks/<task_id>")
     def tasks_get(task_id: str):
@@ -444,6 +482,8 @@ def create_app(
             return jsonify({"error": "Task not found"}), 404
         clean = normalize_task(request.get_json(silent=True) or {}, partial=True)
         validate_schedule({**existing, **clean})
+        if clean.get("submission_completed_at") and existing.get("submission_completed_at"):
+            clean["submission_completed_at"] = existing["submission_completed_at"]
         if clean.get("task_kind", existing.get("task_kind")) == "free_learning" and not clean.get("estimated_minutes", existing.get("estimated_minutes")):
             clean["estimated_minutes"] = 60
         resulting_status = clean.get("status", existing["status"])
@@ -452,13 +492,20 @@ def create_app(
             clean["completed_at"] = existing.get("completed_at") or utc_now()
         elif "status" in clean:
             clean["completed_at"] = None
-        task = task_service.update_record(task_id, clean)
+        try:
+            task = task_service.update_record(task_id, clean)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         assert task is not None
         return jsonify({"task": task})
 
     @app.delete("/api/tasks/<task_id>")
     def tasks_delete(task_id: str):
-        if not task_service.delete(task_id):
+        try:
+            deleted = task_service.delete(task_id)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        if not deleted:
             return jsonify({"error": "Task not found"}), 404
         return "", 204
 
@@ -485,7 +532,7 @@ def create_app(
     def export_data():
         return jsonify(
             {
-                "version": 13,
+                "version": 15,
                 "exported_at": utc_now(),
                 "projects": [asdict(project) for project in project_service.list()],
                 "tasks": task_service.list_records(),
@@ -498,6 +545,7 @@ def create_app(
                         + schedule_service.list_courses(deleted=True)
                     )
                 ],
+                "course_submissions": schedule_service.list_course_submissions(),
                 "appearance": appearance_service.export_backup(),
                 "planning": planning_service.export_backup(),
                 "focus_sessions": focus_service.export_backup(),
@@ -514,6 +562,18 @@ def create_app(
         tasks = payload.get("tasks")
         if not isinstance(tasks, list):
             raise ValidationError("Backup must contain a tasks list")
+        # A backup is sorted for display, not guaranteed parent-first. Restore
+        # long-term themes before their children so foreign keys remain valid.
+        remaining = list(tasks)
+        ordered_tasks: list[dict[str, Any]] = []
+        while remaining:
+            pending_ids = {str(item.get("id")) for item in remaining if isinstance(item, dict) and item.get("id")}
+            ready = [item for item in remaining if isinstance(item, dict)
+                     and str(item.get("parent_task_id") or item.get("parent_id") or "") not in pending_ids]
+            if not ready:
+                raise ValidationError("备份任务层级存在循环或非法条目")
+            ordered_tasks.extend(ready)
+            remaining = [item for item in remaining if item not in ready]
         projects_imported = 0
         for project in payload.get("projects") or []:
             if not isinstance(project, dict):
@@ -521,7 +581,7 @@ def create_app(
             project_service.import_record(project)
             projects_imported += 1
         imported = 0
-        for source in tasks:
+        for source in ordered_tasks:
             clean = normalize_task(source)
             validate_schedule(clean)
             if clean.get("task_kind") == "free_learning" and not clean.get("estimated_minutes"):
@@ -537,12 +597,16 @@ def create_app(
                 "title": clean["title"],
                 "domain": clean.get("domain", "inbox"),
                 "task_kind": clean.get("task_kind", "standard"),
+                "is_theme": clean.get("is_theme", 0),
                 "schedule_mode": clean.get("schedule_mode", "flexible"),
                 "scheduled_date": clean.get("scheduled_date"),
                 "scheduled_start_time": clean.get("scheduled_start_time"),
                 "scheduled_end_time": clean.get("scheduled_end_time"),
                 "schedule_timezone": clean.get("schedule_timezone", "Asia/Shanghai"),
                 "recurrence_until": clean.get("recurrence_until"),
+                "submission_required": clean.get("submission_required", 0),
+                "submission_material": clean.get("submission_material", ""),
+                "submission_completed_at": source.get("submission_completed_at") if clean.get("submission_required") else None,
                 "subcategory": clean.get("subcategory", ""),
                 "tags": clean.get("tags", []),
                 "description": clean.get("description", ""),
@@ -581,12 +645,16 @@ def create_app(
                     "id": restore_id, "title": clean["title"],
                     "domain": clean.get("domain", "inbox"), "subcategory": clean.get("subcategory", ""),
                     "task_kind": clean.get("task_kind", "standard"),
+                    "is_theme": clean.get("is_theme", 0),
                     "schedule_mode": clean.get("schedule_mode", "flexible"),
                     "scheduled_date": clean.get("scheduled_date"),
                     "scheduled_start_time": clean.get("scheduled_start_time"),
                     "scheduled_end_time": clean.get("scheduled_end_time"),
                     "schedule_timezone": clean.get("schedule_timezone", "Asia/Shanghai"),
                     "recurrence_until": clean.get("recurrence_until"),
+                    "submission_required": clean.get("submission_required", 0),
+                    "submission_material": clean.get("submission_material", ""),
+                    "submission_completed_at": source.get("submission_completed_at") if clean.get("submission_required") else None,
                     "tags": clean.get("tags", []), "description": clean.get("description", ""),
                     "created_at": str(source.get("created_at") or now), "updated_at": now,
                     "start_date": clean.get("start_date"), "due_date": clean.get("due_date"),
@@ -618,6 +686,9 @@ def create_app(
             if course.get("deleted_at"):
                 schedule_service.trash_course(created["id"])
             course_imported += 1
+        submissions_imported = schedule_service.import_course_submissions(
+            payload.get("course_submissions")
+        )
         appearance_imported = False
         if isinstance(payload.get("appearance"), dict):
             appearance_service.import_backup(payload["appearance"])
@@ -635,6 +706,7 @@ def create_app(
             "deleted_imported": deleted_imported,
             "semesters_imported": semester_imported,
             "courses_imported": course_imported,
+            "course_submissions_imported": submissions_imported,
             "appearance_imported": appearance_imported,
             **planning_result,
             "focus_sessions_imported": focus_sessions_imported,

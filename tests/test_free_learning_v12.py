@@ -87,7 +87,7 @@ def test_free_learning_is_distinct_from_deadline_work_and_survives_backup(tmp_pa
     assert client.get("/focus-analytics.js").status_code == 200
 
     backup = client.get("/api/export").get_json()
-    assert backup["version"] == 13
+    assert backup["version"] == 15
     restored = create_app(tmp_path / "restored.db").test_client()
     assert restored.post("/api/import", json=backup).status_code == 200
     assert restored.get(f"/api/tasks/{task['id']}").get_json()["task"]["task_kind"] == "free_learning"

@@ -75,7 +75,7 @@ def test_manual_nested_folders_and_backup_restore(tmp_path: Path) -> None:
     assert papers[0]["folder_ids"] == [child["id"]]
 
     backup = client.get("/api/export").get_json()
-    assert backup["version"] == 13 and len(backup["research"]["folders"]) == 2
+    assert backup["version"] == 15 and len(backup["research"]["folders"]) == 2
     restored = create_app(tmp_path / "restored.db").test_client()
     assert restored.post("/api/import", json=backup).status_code == 200
     assert restored.post("/api/import", json=backup).status_code == 200

@@ -158,7 +158,16 @@ class ScheduleRepository:
 
     def replace_meetings(self, course_id: str, meetings: list[dict[str, Any]]) -> None:
         with database(self.db_path) as connection:
-            connection.execute("DELETE FROM course_meetings WHERE course_id = ?", (course_id,))
+            retained_ids = {str(meeting["id"]) for meeting in meetings}
+            for meeting_id in retained_ids:
+                owner = connection.execute(
+                    "SELECT course_id FROM course_meetings WHERE id = ?", (meeting_id,)
+                ).fetchone()
+                if owner and owner["course_id"] != course_id:
+                    raise ValueError("课次 ID 不属于当前课程")
+            for row in connection.execute("SELECT id FROM course_meetings WHERE course_id = ?", (course_id,)):
+                if row["id"] not in retained_ids:
+                    connection.execute("DELETE FROM course_meetings WHERE id = ?", (row["id"],))
             for meeting in meetings:
                 values = dict(meeting)
                 values["custom_weeks_json"] = json.dumps(values.pop("custom_weeks", []))
@@ -169,9 +178,60 @@ class ScheduleRepository:
                      location_override) VALUES
                     (:id,:course_id,:weekday,:start_period,:end_period,:start_time,
                      :end_time,:start_week,:end_week,:week_pattern,:custom_weeks_json,
-                     :teacher_override,:location_override)""",
+                    :teacher_override,:location_override)
+                    ON CONFLICT(id) DO UPDATE SET
+                    weekday=excluded.weekday, start_period=excluded.start_period,
+                    end_period=excluded.end_period, start_time=excluded.start_time,
+                    end_time=excluded.end_time, start_week=excluded.start_week,
+                    end_week=excluded.end_week, week_pattern=excluded.week_pattern,
+                    custom_weeks_json=excluded.custom_weeks_json,
+                    teacher_override=excluded.teacher_override,
+                    location_override=excluded.location_override""",
                     values,
                 )
+
+    def meeting_exists(self, meeting_id: str) -> bool:
+        with database(self.db_path) as connection:
+            return connection.execute(
+                """SELECT 1 FROM course_meetings m JOIN courses c ON c.id = m.course_id
+                WHERE m.id = ? AND c.deleted_at IS NULL""", (meeting_id,)
+            ).fetchone() is not None
+
+    def list_submissions(self, start: str, end: str) -> dict[tuple[str, str], dict[str, Any]]:
+        with database(self.db_path) as connection:
+            rows = connection.execute(
+                "SELECT meeting_id, occurrence_date, material, completed_at FROM course_submissions WHERE occurrence_date BETWEEN ? AND ?",
+                (start, end),
+            ).fetchall()
+            return {(row["meeting_id"], row["occurrence_date"]): dict(row) for row in rows}
+
+    def list_all_submissions(self) -> list[dict[str, Any]]:
+        with database(self.db_path) as connection:
+            return [dict(row) for row in connection.execute("SELECT * FROM course_submissions ORDER BY occurrence_date")]
+
+    def upsert_submission(self, meeting_id: str, occurrence_date: str, material: str,
+                          completed_at: str | None, updated_at: str) -> dict[str, Any]:
+        with database(self.db_path) as connection:
+            connection.execute(
+                """INSERT INTO course_submissions (meeting_id, occurrence_date, material, completed_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(meeting_id, occurrence_date) DO UPDATE SET
+                material=excluded.material, completed_at=excluded.completed_at,
+                updated_at=excluded.updated_at""",
+                (meeting_id, occurrence_date, material, completed_at, updated_at),
+            )
+            return dict(connection.execute(
+                "SELECT * FROM course_submissions WHERE meeting_id = ? AND occurrence_date = ?",
+                (meeting_id, occurrence_date),
+            ).fetchone())
+
+    def delete_submission(self, meeting_id: str, occurrence_date: str) -> bool:
+        with database(self.db_path) as connection:
+            cursor = connection.execute(
+                "DELETE FROM course_submissions WHERE meeting_id = ? AND occurrence_date = ?",
+                (meeting_id, occurrence_date),
+            )
+            return cursor.rowcount > 0
 
     def meetings_between(self, semester_id: str | None = None) -> list[dict[str, Any]]:
         clause = " AND c.semester_id = ?" if semester_id else ""

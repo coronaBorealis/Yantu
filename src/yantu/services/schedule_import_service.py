@@ -6,6 +6,7 @@ import io
 import re
 import tempfile
 import uuid
+from datetime import date
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -32,6 +33,11 @@ HEADER_ALIASES = {
     "start_time": {"开始时间", "上课时间", "start_time"},
     "end_time": {"结束时间", "下课时间", "end_time"},
 }
+WEEK_SPAN = re.compile(
+    r"(?<!\d)((?:第\s*)?\d{1,2}(?:\s*[-–—－~～至]\s*\d{1,2})?"
+    r"(?:\s*[,，、]\s*(?:第\s*)?\d{1,2}(?:\s*[-–—－~～至]\s*\d{1,2})?)*)\s*周"
+)
+WEEK_PART = re.compile(r"(?:第\s*)?(\d{1,2})(?:\s*[-–—－~～至]\s*(\d{1,2}))?")
 
 
 class OCRUnavailableError(RuntimeError):
@@ -112,23 +118,40 @@ def _period_range(value: Any) -> tuple[int, int]:
 
 
 def _week_rule(value: Any) -> tuple[int, int, str, list[int]]:
-    text = str(value or "1-18周").replace(" ", "")
-    numbers = [int(item) for item in re.findall(r"\d+", text)]
-    start, end = (numbers[0], numbers[-1]) if numbers else (1, 18)
+    text = str(value or "1-18周").strip()
+    spans = [match.group(1) for match in WEEK_SPAN.finditer(text)]
+    if not spans and WEEK_PART.fullmatch(text):
+        spans = [text]
+    if not spans:
+        raise ValueError("无法识别课程周次，请核对周次文字")
+    weeks: set[int] = set()
+    parts = [part.strip() for span in spans for part in re.split(r"[,，、]", span)]
+    for part in parts:
+        match = WEEK_PART.fullmatch(part)
+        if not match:
+            raise ValueError("无法识别课程周次，请核对周次文字")
+        start = int(match.group(1))
+        end = int(match.group(2) or start)
+        if start < 1 or end < start:
+            raise ValueError("课程周次范围无效")
+        weeks.update(range(start, end + 1))
+    first, last = min(weeks), max(weeks)
+    if "单" in text and "双" in text:
+        raise ValueError("课程周次规则同时包含单周和双周，请人工核对")
+    if len(parts) > 1:
+        if "单" in text:
+            weeks = {week for week in weeks if week % 2}
+        elif "双" in text:
+            weeks = {week for week in weeks if week % 2 == 0}
+        if not weeks:
+            raise ValueError("课程周次规则没有有效上课周")
+        first, last = min(weeks), max(weeks)
+        return first, last, "custom", sorted(weeks)
     if "单" in text:
-        return start, end, "odd", []
+        return first, last, "odd", []
     if "双" in text:
-        return start, end, "even", []
-    if any(mark in text for mark in (",", "，", "、")) and len(numbers) > 1:
-        weeks: set[int] = set()
-        for part in re.split(r"[,，、]", text.replace("周", "")):
-            bounds = [int(item) for item in re.findall(r"\d+", part)]
-            if len(bounds) >= 2:
-                weeks.update(range(min(bounds[0], bounds[1]), max(bounds[0], bounds[1]) + 1))
-            elif bounds:
-                weeks.add(bounds[0])
-        return min(weeks), max(weeks), "custom", sorted(weeks)
-    return start, end, "all", []
+        return first, last, "even", []
+    return first, last, "all", []
 
 
 def _weekday(value: Any) -> int:
@@ -180,17 +203,7 @@ class ScheduleImportService:
             try:
                 draft = self._normalize_draft(item, semester, index)
             except ValueError as exc:
-                draft = {
-                    "draft_id": str(uuid.uuid4()),
-                    "selected": False,
-                    "name": str(item.get("name") or f"未识别课程 {index + 1}"),
-                    "teacher": str(item.get("teacher") or ""),
-                    "location": str(item.get("location") or ""),
-                    "meetings": [],
-                    "confidence": float(item.get("confidence", 0)),
-                    "errors": [str(exc)],
-                    "warnings": [],
-                }
+                draft = self._editable_error_draft(item, semester, index, str(exc))
             if draft["confidence"] < 0.75:
                 draft["warnings"].append("识别置信度较低，请人工核对")
             courses.append(draft)
@@ -341,7 +354,7 @@ class ScheduleImportService:
         merged: list[dict[str, Any]] = []
         by_name: dict[str, dict[str, Any]] = {}
         for draft in drafts:
-            if draft.get("errors") or not draft.get("meetings"):
+            if not draft.get("meetings"):
                 merged.append(draft)
                 continue
             key = re.sub(r"\s+", "", str(draft.get("name") or "")).casefold()
@@ -351,6 +364,8 @@ class ScheduleImportService:
                 merged.append(draft)
                 continue
             existing["meetings"].extend(draft["meetings"])
+            existing["selected"] = existing["selected"] and draft["selected"]
+            existing["errors"].extend(draft.get("errors") or [])
             existing["confidence"] = min(existing["confidence"], draft["confidence"])
             existing["warnings"].extend(draft.get("warnings") or [])
             if draft.get("teacher") and draft["teacher"] != existing.get("teacher"):
@@ -498,17 +513,58 @@ class ScheduleImportService:
             "location_override": str(item.get("location") or "").strip(),
         }, course_id="preview")
         meeting.pop("course_id")
+        semester_weeks = (date.fromisoformat(semester["end_date"]) - date.fromisoformat(semester["start_date"])).days // 7 + 1
+        warnings = ([f"课程结束于第 {end_week} 周，但学期日期仅覆盖 {semester_weeks} 周；请返回调整学期结束日期"]
+                    if end_week > semester_weeks else [])
         return {
             "draft_id": str(uuid.uuid4()), "selected": True, "name": name,
             "teacher": str(item.get("teacher") or "").strip(),
             "location": str(item.get("location") or "").strip(),
             "color": "#4f77bb", "notes": "", "meetings": [meeting],
-            "confidence": float(item.get("confidence", 1)), "errors": [], "warnings": [],
+            "confidence": float(item.get("confidence", 1)), "errors": [], "warnings": warnings,
+        }
+
+    @staticmethod
+    def _editable_error_draft(item: dict[str, Any], semester: dict[str, Any],
+                              index: int, error: str) -> dict[str, Any]:
+        try:
+            start_period, end_period = _period_range(item.get("periods"))
+        except ValueError:
+            start_period = end_period = 1
+        try:
+            weekday = _weekday(item.get("weekday"))
+        except ValueError:
+            weekday = 1
+        raw_weeks = str(item.get("weeks") or "")
+        numbers = [int(number) for number in re.findall(r"\d+", raw_weeks)]
+        start_week, end_week = (numbers[0], numbers[1]) if len(numbers) >= 2 else (
+            (numbers[0], numbers[0]) if numbers else (1, 18)
+        )
+        periods = {entry["period"]: entry for entry in semester["periods"]}
+        meeting = {
+            "weekday": weekday, "start_period": start_period, "end_period": end_period,
+            "start_time": str(item.get("start_time") or periods.get(start_period, {}).get("start_time") or ""),
+            "end_time": str(item.get("end_time") or periods.get(end_period, {}).get("end_time") or ""),
+            "start_week": start_week, "end_week": end_week,
+            "week_pattern": "odd" if "单" in raw_weeks else "even" if "双" in raw_weeks else "all",
+            "custom_weeks": [], "raw_weeks": raw_weeks,
+            "teacher_override": str(item.get("teacher") or "").strip(),
+            "location_override": str(item.get("location") or "").strip(),
+        }
+        return {
+            "draft_id": str(uuid.uuid4()), "selected": False,
+            "name": str(item.get("name") or f"未识别课程 {index + 1}"),
+            "teacher": str(item.get("teacher") or ""),
+            "location": str(item.get("location") or ""),
+            "meetings": [meeting], "confidence": float(item.get("confidence", 0)),
+            "errors": [error], "warnings": [f"识别原文：{raw_weeks}" if raw_weeks else "请补全课程信息后勾选导入"],
         }
 
     def _mark_conflicts(self, drafts: list[dict[str, Any]], warnings: list[str], semester_id: str) -> None:
         existing = self.repository.meetings_between()
         for draft in drafts:
+            if draft.get("errors"):
+                continue
             for meeting in draft.get("meetings", []):
                 duplicates = [old for old in existing if
                     old["semester_id"] == semester_id
@@ -551,6 +607,7 @@ class ScheduleImportService:
         import_id = str(uuid.uuid4())
         now = utc_now()
         courses = []
+        semester_weeks = (date.fromisoformat(semester["end_date"]) - date.fromisoformat(semester["start_date"])).days // 7 + 1
         for item in selected:
             course_id = str(uuid.uuid4())
             name = str(item.get("name") or "").strip()
@@ -560,6 +617,11 @@ class ScheduleImportService:
             if not isinstance(meetings_source, list) or not meetings_source:
                 raise ValueError(f"课程 {name} 缺少有效上课时段")
             meetings = [self.schedule.normalize_meeting(meeting, course_id=course_id) for meeting in meetings_source]
+            for meeting in meetings:
+                if meeting["end_week"] > semester_weeks:
+                    raise ValueError(
+                        f"课程 {name} 第 {meeting['end_week']} 周超出学期日期（仅覆盖 {semester_weeks} 周），请返回调整学期结束日期"
+                    )
             course = {
                 "id": course_id, "semester_id": semester["id"], "import_id": import_id,
                 "name": name, "teacher": str(item.get("teacher") or "").strip(),

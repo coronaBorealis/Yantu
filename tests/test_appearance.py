@@ -32,6 +32,25 @@ def test_default_save_and_corrupt_config_fallback(tmp_path: Path) -> None:
     assert service.get()["preset"] == "forest"
 
 
+@pytest.mark.parametrize("preset", ["sage", "clay"])
+@pytest.mark.parametrize("mode", ["light", "dark", "system"])
+def test_muted_theme_with_ambient_background_round_trip(tmp_path: Path, preset: str, mode: str) -> None:
+    client = create_app(tmp_path / f"{preset}-{mode}.db").test_client()
+    payload = {
+        "preset": preset,
+        "mode": mode,
+        "background": {"type": "ambient"},
+        "surface_opacity": 0.92,
+    }
+    saved = client.put("/api/appearance", json=payload)
+    assert saved.status_code == 200
+    assert saved.get_json()["appearance"]["background"]["type"] == "ambient"
+    restored = client.get("/api/appearance").get_json()["appearance"]
+    assert (restored["preset"], restored["mode"]) == (preset, mode)
+    assert restored["background"]["type"] == "ambient"
+    assert restored["has_background_image"] is False
+
+
 @pytest.mark.parametrize("field,value", [
     ("preset", "unknown"),
     ("mode", "sepia"),

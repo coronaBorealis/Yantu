@@ -15,9 +15,9 @@
       if(cached){document.documentElement.dataset.theme=cached.resolved_mode||cached.mode||'light';document.documentElement.dataset.preset=cached.preset||'forest'}
     } catch (_) {}
   </script>
-  <link rel="stylesheet" href="styles.css?v=20260916.4">
-  <link rel="stylesheet" href="focus-analytics.css?v=20260916.4">
-  <link rel="stylesheet" href="theme.css?v=20260916.1">
+  <link rel="stylesheet" href="styles.css?v=20261020.2">
+  <link rel="stylesheet" href="focus-analytics.css?v=20261020.1">
+  <link rel="stylesheet" href="theme.css?v=20261020.2">
 </head>
 <body>
   <div class="app-shell">
@@ -28,6 +28,7 @@
         <button class="nav-item" data-view="inbox"><span>＋</span>收件箱 <b id="count-inbox">0</b></button>
         <p class="nav-label">领域</p>
         <button class="nav-item" data-view="research"><i class="dot research"></i>科研 <b id="count-research">0</b></button>
+        <button class="nav-item" data-view="themes"><span>◈</span>长期主题</button>
         <button class="nav-item" data-view="course"><i class="dot course"></i>课程 <b id="count-course">0</b></button>
         <button class="nav-item" data-view="personal"><i class="dot personal"></i>个人 <b id="count-personal">0</b></button>
         <p class="nav-label">学习</p>
@@ -73,7 +74,8 @@
         <label class="field"><span>一级领域 *</span><select id="task-domain"><option value="research">科研</option><option value="course">课程</option><option value="personal">个人</option><option value="inbox">收件箱（稍后整理）</option></select></label>
         <label class="field"><span>二级分类 / 标签</span><input id="task-subcategory" maxlength="60" placeholder="论文阅读、实验、作业……"></label>
       </div>
-      <label class="field full"><span>任务方式</span><select id="task-kind"><option value="standard">目标任务（可设截止日期）</option><option value="free_learning">自由学习（按节奏持续投入）</option><option value="time_block">时间段占用（课程、会议等）</option></select><small id="task-kind-hint">目标任务按日期参与每日规划。</small></label>
+      <label class="field full"><span>任务方式</span><select id="task-kind"><option value="standard">目标任务（可设截止日期）</option><option value="theme">长期主题（大课题／大横向）</option><option value="free_learning">自由学习（按节奏持续投入）</option><option value="time_block">时间段占用（课程、会议等）</option></select><small id="task-kind-hint">目标任务按日期参与每日规划。</small></label>
+      <label class="field full" id="task-parent-field"><span>归属长期主题（可选）</span><select id="task-parent"><option value="">不归属长期主题</option></select><small>子任务的专注时长会同时计入对应大课题。</small></label>
       <div id="task-time-block-fields" class="time-block-fields hidden">
         <div class="form-grid three"><label class="field"><span>占用日期 *</span><input type="date" id="task-block-date"></label><label class="field"><span>开始时间 *</span><input type="time" id="task-block-start"></label><label class="field"><span>结束时间 *</span><input type="time" id="task-block-end"></label></div>
         <div class="form-grid"><label class="switch-row compact"><span><b>每周重复</b><small>按首次日期的星期重复</small></span><input type="checkbox" id="task-block-weekly"></label><label class="field" id="task-block-until-field"><span>重复至</span><input type="date" id="task-block-until" disabled></label></div>
@@ -83,6 +85,8 @@
         <label class="field"><span>预计耗时（分钟）</span><input type="number" id="task-estimated" min="0" max="100000" step="5" value="60"></label>
         <label class="field"><span>优先级</span><select id="task-priority"><option value="urgent">紧急</option><option value="high">高</option><option value="medium" selected>中</option><option value="low">低</option></select></label>
       </div>
+      <label class="switch-row compact"><span><b>待提交资料</b><small>启用后，未提交时在任务与日程上显示半红色提醒条。</small></span><input type="checkbox" id="task-submission-required"></label>
+      <div id="task-submission-fields" class="hidden"><label class="field full"><span>要提交什么</span><input id="task-submission-material" maxlength="200" placeholder="例如：实验报告、阅读笔记或汇报 PPT"></label><label class="switch-row compact"><span><b>已经提交</b><small>与任务完成状态分开记录。</small></span><input type="checkbox" id="task-submission-submitted"></label></div>
       <label class="field full hidden" id="task-paper-field"><span>关联已保存论文（可选）</span><select id="task-paper"><option value="">不关联论文</option></select><small>选择后，任务会归入该论文的阅读历史，便于定期复盘。</small></label>
       <details class="advanced-settings">
         <summary>更多设置 <span>描述、状态、标签、重复和实际耗时</span></summary>
@@ -243,14 +247,24 @@
       <div class="dialog-actions"><span></span><button type="button" class="secondary-btn" id="cancel-course">取消</button><button type="submit" class="primary-btn">保存课程</button></div>
     </form>
   </dialog>
+  <dialog id="course-submission-dialog">
+    <form id="course-submission-form">
+      <div class="dialog-head"><div><p>仅影响这一天的课程</p><h2>待交作业</h2></div><button type="button" class="icon-btn" id="close-course-submission" aria-label="关闭">×</button></div>
+      <p id="course-submission-context" class="form-hint"></p>
+      <label class="field full"><span>作业或资料名称 *</span><input id="course-submission-material" required maxlength="200" placeholder="例如：数值分析习题 3"></label>
+      <label class="switch-row compact"><span><b>已经提交</b><small>提交后移除红色提醒，记录仍保留。</small></span><input type="checkbox" id="course-submission-completed"></label>
+      <div class="dialog-actions"><button type="button" class="danger-btn" id="remove-course-submission">移除待交作业</button><span></span><button type="button" class="secondary-btn" id="cancel-course-submission">取消</button><button type="submit" class="primary-btn">保存</button></div>
+    </form>
+  </dialog>
   <dialog id="appearance-dialog" class="appearance-dialog">
     <form id="appearance-form">
       <div class="dialog-head"><div><p>只保存在这台电脑</p><h2>外观设置</h2></div><button type="button" class="icon-btn" id="close-appearance" aria-label="关闭">×</button></div>
       <div class="appearance-layout">
         <div class="appearance-controls">
           <fieldset class="appearance-group"><legend>显示模式</legend><div class="segmented" id="appearance-modes"><label><input type="radio" name="appearance-mode" value="system">跟随系统</label><label><input type="radio" name="appearance-mode" value="light">浅色</label><label><input type="radio" name="appearance-mode" value="dark">深色</label></div></fieldset>
-          <fieldset class="appearance-group"><legend>主题预设</legend><div class="preset-grid" id="appearance-presets"><label data-preset="forest"><input type="radio" name="appearance-preset" value="forest"><i></i><span>研林</span></label><label data-preset="paper"><input type="radio" name="appearance-preset" value="paper"><i></i><span>纸页</span></label><label data-preset="mist"><input type="radio" name="appearance-preset" value="mist"><i></i><span>晨雾</span></label><label data-preset="night"><input type="radio" name="appearance-preset" value="night"><i></i><span>夜航</span></label></div></fieldset>
-          <label class="field"><span>背景类型</span><select id="appearance-background-type"><option value="none">无背景</option><option value="solid">纯色</option><option value="gradient">渐变</option><option value="image">本地图片</option></select></label>
+          <fieldset class="appearance-group"><legend>主题预设</legend><div class="preset-grid" id="appearance-presets"><label data-preset="forest"><input type="radio" name="appearance-preset" value="forest"><i></i><span>研林</span></label><label data-preset="paper"><input type="radio" name="appearance-preset" value="paper"><i></i><span>纸页</span></label><label data-preset="mist"><input type="radio" name="appearance-preset" value="mist"><i></i><span>晨雾</span></label><label data-preset="night"><input type="radio" name="appearance-preset" value="night"><i></i><span>夜航</span></label><label data-preset="sage"><input type="radio" name="appearance-preset" value="sage"><i></i><span>苔原</span></label><label data-preset="clay"><input type="radio" name="appearance-preset" value="clay"><i></i><span>砂岩</span></label></div></fieldset>
+          <label class="field"><span>背景类型</span><select id="appearance-background-type"><option value="none">无背景</option><option value="ambient">柔和氛围（随主题变化）</option><option value="solid">纯色</option><option value="gradient">渐变</option><option value="image">本地图片</option></select></label>
+          <p id="appearance-ambient" class="appearance-option appearance-hint hidden">使用低饱和度光晕和渐变，不下载图片；切换浅色或深色时自动适配。</p>
           <div id="appearance-solid" class="appearance-option"><label class="color-field"><span>背景颜色</span><input type="color" id="appearance-color"></label></div>
           <div id="appearance-gradient" class="appearance-option gradient-fields"><label class="color-field"><span>起始颜色</span><input type="color" id="appearance-gradient-start"></label><label class="color-field"><span>结束颜色</span><input type="color" id="appearance-gradient-end"></label><label class="field"><span>角度</span><input type="range" id="appearance-gradient-angle" min="0" max="360"><output id="appearance-angle-output"></output></label></div>
           <div id="appearance-image" class="appearance-option"><label class="image-drop">选择 PNG、JPG 或 WebP（最大 8 MB）<input type="file" id="appearance-image-file" accept="image/png,image/jpeg,image/webp"></label><button type="button" class="danger-link" id="remove-background">移除当前图片</button></div>
@@ -277,7 +291,7 @@
   <section id="focus-panel" class="focus-panel hidden" aria-label="专注计时器" aria-live="polite"></section>
   <div id="context-menu" class="context-menu hidden" role="menu" aria-label="快捷操作"></div>
   <div class="toast" id="toast" role="status"><span id="toast-text"></span><button id="toast-action" class="hidden"></button></div>
-  <script src="focus-analytics.js?v=20260916.4"></script>
-  <script src="app.js?v=20260916.4"></script>
+  <script src="focus-analytics.js?v=20261020.1"></script>
+  <script src="app.js?v=20261020.3"></script>
 </body>
 </html>

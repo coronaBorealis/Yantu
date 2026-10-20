@@ -97,7 +97,9 @@ def create_focus_blueprint(
     @blueprint.get("/analytics")
     def analytics_report():
         return jsonify({"analytics": analytics.report(
-            start=request.args.get("start"), end=request.args.get("end")
+            start=request.args.get("start"), end=request.args.get("end"),
+            theme_id=request.args.get("theme_id") or None,
+            task_id=request.args.get("task_id") or None,
         )})
 
     @blueprint.errorhandler(ValueError)

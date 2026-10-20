@@ -13,9 +13,9 @@ from ..database.repositories.appearance_repository import AppearanceRepository
 
 MAX_BACKGROUND_BYTES = 8 * 1024 * 1024
 HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
-PRESETS = {"forest", "paper", "mist", "night"}
+PRESETS = {"forest", "paper", "mist", "night", "sage", "clay"}
 MODES = {"system", "light", "dark"}
-BACKGROUND_TYPES = {"none", "solid", "gradient", "image"}
+BACKGROUND_TYPES = {"none", "ambient", "solid", "gradient", "image"}
 MIME_EXTENSIONS = {
     "image/png": ".png",
     "image/jpeg": ".jpg",

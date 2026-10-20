@@ -53,6 +53,8 @@ class FocusService:
             raise ValueError("无效的计时方式")
         task_id = str(values.get("task_id") or "") or None
         task = self.tasks.get(task_id) if task_id else None
+        if session_type == "focus" and task and task.get("is_theme"):
+            raise ValueError("长期主题请先创建具体子任务或自由探索任务")
         if session_type == "focus" and (
             not task or task.get("status") not in {"not_started", "in_progress", "waiting"}
         ):

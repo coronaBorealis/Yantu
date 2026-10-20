@@ -8,7 +8,7 @@ import pytest
 
 from yantu.database.repository import init_db
 from yantu.main import create_app
-from yantu.services.schedule_import_service import ScheduleImportService
+from yantu.services.schedule_import_service import ScheduleImportService, _week_rule
 from yantu.services.schedule_service import ScheduleService
 
 
@@ -42,7 +42,7 @@ def test_v3_migration_is_idempotent_and_preserves_tasks(tmp_path: Path):
     init_db(db_path)
     connection = sqlite3.connect(db_path)
     try:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 15
         assert connection.execute("SELECT title FROM tasks WHERE id='old'").fetchone()[0] == "旧任务"
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
         assert {"semesters", "courses", "course_meetings", "course_exceptions", "schedule_imports"} <= tables
@@ -86,6 +86,80 @@ def test_csv_preview_is_read_only_then_confirm_is_atomic(tmp_path: Path):
     assert importer.repository.list_courses()[0]["name"] == "激光雷达"
     with pytest.raises(ValueError, match="已经导入"):
         importer.confirm(preview)
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("1-16周", (1, 16, "all", [])),
+    ("第1—16周（第2-4节）", (1, 16, "all", [])),
+    ("1-16周单周", (1, 16, "odd", [])),
+    ("6-12,14-16周", (6, 16, "custom", [6, 7, 8, 9, 10, 11, 12, 14, 15, 16])),
+    ("1-8周,10-16周", (1, 16, "custom", [*range(1, 9), *range(10, 17)])),
+    ("1-8,10-16周单周", (1, 15, "custom", [1, 3, 5, 7, 11, 13, 15])),
+])
+def test_week_rule_ignores_unrelated_period_numbers(text: str, expected: tuple):
+    assert _week_rule(text) == expected
+
+
+@pytest.mark.parametrize("text", ["0-16周", "16-1周", "未识别周次"])
+def test_week_rule_rejects_invalid_or_unreadable_range(text: str):
+    with pytest.raises(ValueError, match="周次"):
+        _week_rule(text)
+
+
+def test_invalid_week_preview_can_be_corrected_before_atomic_confirm(tmp_path: Path):
+    importer = ScheduleImportService(tmp_path / "recover.db")
+    content = (
+        "课程名称,教师,地点,星期,节次,周次\n"
+        "光学原理,李老师,A101,周一,1-2节,1-16周\n"
+        "信号处理,王老师,B202,周三,3-4节,0-16周\n"
+    ).encode("utf-8")
+    preview = importer.preview("课表.csv", content, {"semester": semester_payload()})
+    invalid = preview["courses"][1]
+    assert invalid["selected"] is False
+    assert invalid["meetings"][0]["start_week"] == 0
+    assert invalid["meetings"][0]["end_week"] == 16
+    assert importer.repository.list_courses() == []
+    invalid["selected"] = True
+    with pytest.raises(ValueError, match="课程周次范围无效"):
+        importer.confirm(preview)
+    assert importer.repository.list_courses() == []
+    assert importer.repository.list_semesters() == []
+    invalid["meetings"][0]["start_week"] = 1
+    created = importer.confirm(preview)
+    assert len(created) == 2
+    assert {course["name"] for course in importer.repository.list_courses()} == {"光学原理", "信号处理"}
+
+
+def test_same_course_with_one_invalid_week_remains_one_editable_draft(tmp_path: Path):
+    importer = ScheduleImportService(tmp_path / "merged.db")
+    content = (
+        "课程名称,教师,地点,星期,节次,周次\n"
+        "光学原理,李老师,A101,周一,1-2节,1-8周\n"
+        "光学原理,李老师,A101,周三,3-4节,0-8周\n"
+    ).encode("utf-8")
+    preview = importer.preview("课表.csv", content, {"semester": semester_payload()})
+    assert len(preview["courses"]) == 1
+    course = preview["courses"][0]
+    assert course["selected"] is False
+    assert len(course["meetings"]) == 2
+    next(meeting for meeting in course["meetings"] if meeting["weekday"] == 3)["start_week"] = 1
+    course["selected"] = True
+    importer.confirm(preview)
+    saved = importer.repository.list_courses()
+    assert len(saved) == 1
+    assert len(importer.repository.get_course(saved[0]["id"])["meetings"]) == 2
+
+
+def test_import_rejects_weeks_outside_semester_without_writing(tmp_path: Path):
+    importer = ScheduleImportService(tmp_path / "short-semester.db")
+    short = {**semester_payload(), "end_date": "2026-09-13"}
+    content = "课程名称,星期,节次,周次\n机器视觉,周一,1-2节,1-8周\n".encode("utf-8")
+    preview = importer.preview("课表.csv", content, {"semester": short})
+    assert "仅覆盖 2 周" in preview["courses"][0]["warnings"][0]
+    with pytest.raises(ValueError, match="超出学期日期"):
+        importer.confirm(preview)
+    assert importer.repository.list_courses() == []
+    assert importer.repository.list_semesters() == []
 
 
 class FakeOCR:

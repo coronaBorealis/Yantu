@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import uuid
 import math
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..common import utc_now
 from ..database.constants import DOMAINS
@@ -44,25 +45,103 @@ class TaskService:
         status: TaskStatus | str | None = None,
         sort_by_deadline: bool = False,
     ) -> list[dict[str, Any]]:
-        return self.repository.list(
+        records = self.repository.list(
             domain=domain,
             project_id=project_id,
             status=status,
             sort_by_deadline=sort_by_deadline,
         )
+        return [self._with_temporal_state(record) for record in records]
 
     def get(self, task_id: str) -> Task | None:
         record = self.repository.get(task_id)
         return Task.from_record(record) if record else None
 
     def get_record(self, task_id: str) -> dict[str, Any] | None:
-        return self.repository.get(task_id)
+        record = self.repository.get(task_id)
+        return self._with_temporal_state(record) if record else None
 
     def create_record(self, values: dict[str, Any]) -> dict[str, Any]:
-        return self.repository.create(values)
+        self._validate_record_hierarchy(None, values)
+        return self._with_temporal_state(self.repository.create(values))
 
     def update_record(self, task_id: str, values: dict[str, Any]) -> dict[str, Any] | None:
-        return self.repository.update(task_id, values)
+        existing = self.repository.get(task_id)
+        if not existing:
+            return None
+        self._validate_record_hierarchy(task_id, values, existing=existing)
+        record = self.repository.update(task_id, values)
+        return self._with_temporal_state(record) if record else None
+
+    def _validate_record_hierarchy(self, task_id: str | None, values: Mapping[str, Any],
+                                   *, existing: Mapping[str, Any] | None = None) -> None:
+        merged = {**(existing or {}), **values}
+        parent_id = (values["parent_task_id"] if "parent_task_id" in values else
+                     values["parent_id"] if "parent_id" in values else
+                     merged.get("parent_task_id") or merged.get("parent_id"))
+        deadline = (values["deadline"] if "deadline" in values else
+                    values["due_date"] if "due_date" in values else
+                    merged.get("deadline") or merged.get("due_date"))
+        estimate = (values["estimated_hours"] if "estimated_hours" in values else
+                    values["estimated_minutes"] if "estimated_minutes" in values else
+                    merged.get("estimated_hours") or merged.get("estimated_minutes"))
+        is_theme = bool(merged.get("is_theme"))
+        if is_theme:
+            if parent_id:
+                raise ValueError("长期主题不能作为其他任务的子任务")
+            if (merged.get("task_kind") or "standard") != "standard" or (merged.get("schedule_mode") or "flexible") != "flexible":
+                raise ValueError("长期主题应使用普通任务方式，不占用固定时间段")
+            if deadline or estimate:
+                raise ValueError("长期主题不设置截止日期或预计工时，请在子任务中规划")
+        if parent_id:
+            parent = self.repository.get(str(parent_id))
+            if not parent:
+                raise ValueError("父任务不存在")
+            if task_id:
+                self._validate_parent(task_id, str(parent_id))
+            if parent.get("is_theme") and merged.get("domain") != parent.get("domain"):
+                raise ValueError("子任务应与长期主题属于同一领域")
+
+    @staticmethod
+    def _with_temporal_state(record: dict[str, Any]) -> dict[str, Any]:
+        task = dict(record)
+        if task.get("schedule_mode") != "time_block":
+            return task
+        try:
+            zone = ZoneInfo(str(task.get("schedule_timezone") or "Asia/Shanghai"))
+            first = date.fromisoformat(str(task["scheduled_date"]))
+            start = time.fromisoformat(str(task["scheduled_start_time"]))
+            end = time.fromisoformat(str(task["scheduled_end_time"]))
+        except (ValueError, KeyError, TypeError, ZoneInfoNotFoundError):
+            task["temporal_state"] = "unknown"
+            return task
+        now = datetime.now(zone)
+        today = now.date()
+        recurring = bool(task.get("is_recurring")) and task.get("recurrence_rule") == "weekly"
+        try:
+            until = date.fromisoformat(str(task.get("recurrence_until") or first)) if recurring else first
+        except ValueError:
+            task["temporal_state"] = "unknown"
+            return task
+        if today < first:
+            state = "upcoming"
+        elif today > until:
+            state = "overdue"
+        elif today.weekday() == first.weekday() and (today == first or recurring):
+            if now.time() < start:
+                state = "upcoming"
+            elif now.time() < end:
+                state = "ongoing"
+            else:
+                next_date = today + timedelta(days=7)
+                state = "upcoming" if recurring and next_date <= until else "overdue"
+        elif recurring:
+            next_date = today + timedelta(days=(first.weekday() - today.weekday()) % 7)
+            state = "upcoming" if next_date <= until else "overdue"
+        else:
+            state = "overdue"
+        task["temporal_state"] = state
+        return task
 
     def count(self) -> int:
         return self.repository.count()
@@ -78,7 +157,7 @@ class TaskService:
         for task in self.repository.list():
             if task.get("status") not in {"not_started", "in_progress", "waiting"}:
                 continue
-            if task.get("task_kind") == "free_learning":
+            if task.get("task_kind") == "free_learning" or task.get("is_theme"):
                 continue
             if task.get("schedule_mode") == "time_block":
                 continue
@@ -169,6 +248,12 @@ class TaskService:
             if deadline:
                 raise ValueError("自由学习任务不使用截止日期")
             estimated_hours = estimated_hours or 1.0
+        is_theme = bool(values.get("is_theme"))
+        self._validate_record_hierarchy(None, {**values, "parent_task_id": parent_id,
+                                               "domain": values.get("domain") or "inbox",
+                                               "task_kind": task_kind, "schedule_mode": values.get("schedule_mode") or "flexible",
+                                               "estimated_hours": estimated_hours, "deadline": deadline,
+                                               "is_theme": is_theme})
         actual_hours = self._hours(values.get("actual_hours", 0), "实际工时")
         priority = TaskPriority.parse(values.get("priority"))
         status = TaskStatus.parse(values.get("status"))
@@ -184,6 +269,7 @@ class TaskService:
                 "title": title,
                 "domain": domain,
                 "task_kind": task_kind,
+                "is_theme": int(is_theme),
                 "schedule_mode": str(values.get("schedule_mode") or "flexible"),
                 "scheduled_date": values.get("scheduled_date"),
                 "scheduled_start_time": values.get("scheduled_start_time"),
@@ -215,7 +301,10 @@ class TaskService:
         existing = self.repository.get(task_id)
         if not existing:
             return None
+        self._validate_record_hierarchy(task_id, values, existing=existing)
         changes: dict[str, Any] = {}
+        if "is_theme" in values:
+            changes["is_theme"] = int(bool(values["is_theme"]))
         if "task_kind" in values:
             task_kind = str(values["task_kind"] or "standard")
             if task_kind not in {"standard", "free_learning"}:
@@ -270,6 +359,12 @@ class TaskService:
         return Task.from_record(record) if record else None
 
     def delete(self, task_id: str) -> bool:
+        task = self.repository.get(task_id)
+        if task and task.get("is_theme"):
+            children = [item for item in self.repository.list()
+                        if (item.get("parent_task_id") or item.get("parent_id")) == task_id]
+            if children:
+                raise ValueError("长期主题下仍有子任务，请先移动或删除子任务")
         return self.repository.delete(task_id)
 
     def restore(self, task_id: str) -> bool:

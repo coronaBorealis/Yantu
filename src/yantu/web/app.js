@@ -14,7 +14,9 @@ const THEME_PALETTES={
   forest:{light:{canvas:'#f4f7f3',surface:'#fffefb',strong:'#f9fcf8',text:'#17241e',muted:'#526059',border:'#b9c6bf',accent:'#275e48',soft:'#e4efe9'},dark:{canvas:'#132019',surface:'#1d2b24',strong:'#18251f',text:'#f2f7f3',muted:'#b9c8c0',border:'#52655b',accent:'#78b99b',soft:'#293d33'}},
   paper:{light:{canvas:'#f7f2e7',surface:'#fffdf7',strong:'#fbf7ee',text:'#29251f',muted:'#655e52',border:'#cec2ae',accent:'#765b34',soft:'#eee4d2'},dark:{canvas:'#211e19',surface:'#2c2821',strong:'#27231d',text:'#faf5e9',muted:'#c9bfad',border:'#665d4d',accent:'#d0ad70',soft:'#3d3529'}},
   mist:{light:{canvas:'#eef4f5',surface:'#fbfeff',strong:'#f5fafb',text:'#17272d',muted:'#50636b',border:'#b8c8cd',accent:'#3c7180',soft:'#dfecef'},dark:{canvas:'#132127',surface:'#1b2c33',strong:'#17272d',text:'#eff7f8',muted:'#b6c8cd',border:'#50666e',accent:'#7eb5c2',soft:'#263d45'}},
-  night:{light:{canvas:'#edf0f6',surface:'#fbfcff',strong:'#f5f7fb',text:'#1d2433',muted:'#566074',border:'#bcc4d3',accent:'#405d8c',soft:'#e1e7f1'},dark:{canvas:'#111927',surface:'#1b2638',strong:'#162132',text:'#f1f5fb',muted:'#b5c0d2',border:'#4b5a72',accent:'#86a6da',soft:'#27364d'}}
+  night:{light:{canvas:'#edf0f6',surface:'#fbfcff',strong:'#f5f7fb',text:'#1d2433',muted:'#566074',border:'#bcc4d3',accent:'#405d8c',soft:'#e1e7f1'},dark:{canvas:'#111927',surface:'#1b2638',strong:'#162132',text:'#f1f5fb',muted:'#b5c0d2',border:'#4b5a72',accent:'#86a6da',soft:'#27364d'}},
+  sage:{light:{canvas:'#e9eeea',surface:'#f8faf7',strong:'#f0f4f0',text:'#233029',muted:'#56635b',border:'#b9c6bc',accent:'#526f5d',soft:'#dce6de'},dark:{canvas:'#1b2420',surface:'#252f29',strong:'#202a25',text:'#edf3ee',muted:'#b5c3b9',border:'#56675a',accent:'#9ab9a3',soft:'#33443a'}},
+  clay:{light:{canvas:'#f1ece7',surface:'#fcfaf7',strong:'#f5f1eb',text:'#302b27',muted:'#685f57',border:'#d2c5b9',accent:'#795f51',soft:'#e9ddd1'},dark:{canvas:'#26211f',surface:'#332c28',strong:'#2b2522',text:'#f5eee8',muted:'#cfc0b5',border:'#746359',accent:'#c8a68e',soft:'#453a33'}}
 };
 
 const REQUEST_TOKEN=document.querySelector('meta[name="yantu-request-token"]')?.content||'';
@@ -31,14 +33,32 @@ async function api(path,options={}){
 }
 
 function esc(value=''){const node=document.createElement('div');node.textContent=String(value);return node.innerHTML}
+function escAttr(value=''){return esc(value).replaceAll('"','&quot;').replaceAll("'",'&#39;')}
 function fmtDuration(minutes=0){const n=Number(minutes)||0;if(!n)return '未估时';return n>=60?(n%60?`${Math.floor(n/60)}小时${n%60}分`:`${n/60}小时`):`${n}分钟`}
 function fmtDate(value){if(!value)return '无截止日期';const d=parseDate(value);return `${d.getMonth()+1}月${d.getDate()}日`}
 function taskDeadline(task){const value=task?.deadline||task?.due_date;if(!value)return null;const key=String(value).slice(0,10);return /^\d{4}-\d{2}-\d{2}$/.test(key)?key:null}
 function currentSemester(){const key=today(),active=state.semesters.find(item=>item.start_date<=key&&item.end_date>=key);if(active)return active;return [...state.semesters].sort((a,b)=>Math.abs(parseDate(a.start_date)-new Date())-Math.abs(parseDate(b.start_date)-new Date()))[0]||null}
-function isOverdue(task){const deadline=taskDeadline(task);return ACTIVE_STATUSES.has(task.status)&&Boolean(deadline&&deadline<today())}
+function timeBlockPhase(task,now=new Date()){
+  if(task?.schedule_mode!=='time_block'||!task.scheduled_date)return null;
+  const first=parseDate(task.scheduled_date),start=task.scheduled_start_time,end=task.scheduled_end_time;
+  if(!first||!start||!end)return null;
+  const key=iso(now),recurring=Boolean(task.is_recurring&&task.recurrence_rule==='weekly');
+  const until=recurring?(task.recurrence_until||task.scheduled_date):task.scheduled_date;
+  if(key>until)return 'overdue';
+  if(key<task.scheduled_date)return 'upcoming';
+  const occurrence=key===task.scheduled_date||(recurring&&now.getDay()===first.getDay());
+  const nextOccurrence=days=>iso(addDays(now,days))<=until?'upcoming':'overdue';
+  if(!occurrence)return recurring?nextOccurrence((first.getDay()-now.getDay()+7)%7):'overdue';
+  const current=`${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  if(current<start)return 'upcoming';
+  return current<end?'ongoing':recurring?nextOccurrence(7):'overdue';
+}
+function pendingSubmission(task){return Boolean(task?.submission_required&&!task.submission_completed_at&&active(task))}
+function pendingEventSubmission(event){return event.source_type==='course'?Boolean(event.submission&&!event.submission.completed_at):Boolean(event.submission_required&&!event.submission_completed_at)}
+function isOverdue(task){const deadline=taskDeadline(task);return ACTIVE_STATUSES.has(task.status)&&Boolean((deadline&&deadline<today())||timeBlockPhase(task)==='overdue')}
 function active(task){return ACTIVE_STATUSES.has(task.status)}
 function matchesFilters(task){return (state.status==='all'||task.status===state.status)&&(state.subcategory==='all'||task.subcategory===state.subcategory)}
-function viewTasks(){let tasks=state.tasks.filter(matchesFilters);if(['research','course','personal','inbox'].includes(state.view))tasks=tasks.filter(task=>task.domain===state.view);if(state.view==='free_learning')tasks=tasks.filter(task=>task.task_kind==='free_learning');return tasks}
+function viewTasks(){let tasks=state.tasks.filter(task=>matchesFilters(task)&&!task.is_theme);if(['research','course','personal','inbox'].includes(state.view))tasks=tasks.filter(task=>task.domain===state.view);if(state.view==='free_learning')tasks=tasks.filter(task=>task.task_kind==='free_learning');return tasks}
 function sortTasks(a,b){const aDeadline=taskDeadline(a),bDeadline=taskDeadline(b);return Number(['completed','cancelled'].includes(a.status))-Number(['completed','cancelled'].includes(b.status))||({urgent:0,high:1,medium:2,low:3}[a.priority]-{urgent:0,high:1,medium:2,low:3}[b.priority])||Number(!aDeadline)-Number(!bDeadline)||(aDeadline||'9999').localeCompare(bDeadline||'9999')||a.title.localeCompare(b.title,'zh-CN')}
 
 async function loadTasks({migrate=true}={}){
@@ -100,6 +120,7 @@ function render(){
   else if(state.view==='focus_analytics')content.innerHTML=renderFocusAnalytics();
   else if(state.view==='research_library')content.innerHTML=renderResearchLibrary();
   else if(state.view==='free_learning')content.innerHTML=renderFreeLearning();
+  else if(state.view==='themes')content.innerHTML=renderThemes();
   else if(state.view==='today')content.innerHTML=renderToday();
   else if(state.view==='week')content.innerHTML=renderWeek();
   else if(state.view==='month')content.innerHTML=renderMonth();
@@ -111,14 +132,14 @@ function render(){
 }
 
 function updateChrome(){
-  const titles={today:'今日',inbox:'收件箱',research:'科研工作台',course:'课程学习',personal:'个人生活',free_learning:'自由学习',week:'未来 7 天',month:'月历',schedule:'课程表',research_library:'科研文献',focus_analytics:'专注分析',trash:'回收站'};
+  const titles={today:'今日',inbox:'收件箱',research:'科研工作台',themes:'长期主题',course:'课程学习',personal:'个人生活',free_learning:'自由学习',week:'未来 7 天',month:'月历',schedule:'课程表',research_library:'科研文献',focus_analytics:'专注分析',trash:'回收站'};
   $('#view-title').textContent=titles[state.view]||'AI 任务拆解';
   const now=new Date();
   $('#date-label').textContent=`${now.getFullYear()}年${now.getMonth()+1}月${now.getDate()}日 · ${['星期日','星期一','星期二','星期三','星期四','星期五','星期六'][now.getDay()]}`;
   const semester=currentSemester(),indicator=$('#semester-indicator');indicator.classList.toggle('hidden',!semester);if(semester)indicator.innerHTML=`<b>${esc(semester.stage_label||semester.name)}</b><span>第 1 周 ${esc(semester.start_date.slice(5))} · 可修改</span>`;
   $$('.nav-item').forEach(button=>button.classList.toggle('active',button.dataset.view===state.view));
   for(const domain of ['research','course','personal','inbox']){
-    const count=state.tasks.filter(task=>task.domain===domain&&active(task)).length;
+    const count=state.tasks.filter(task=>task.domain===domain&&!task.is_theme&&active(task)).length;
     $(`#count-${domain}`).textContent=count;
   }
   $('#count-free-learning').textContent=state.tasks.filter(task=>task.task_kind==='free_learning'&&active(task)).length;
@@ -132,7 +153,7 @@ function updateChrome(){
 }
 
 function renderToday(){
-  const tasks=state.tasks.filter(matchesFilters);
+  const tasks=state.tasks.filter(task=>matchesFilters(task)&&!task.is_theme);
   const must=tasks.filter(task=>active(task)&&taskDeadline(task)===today()&&['urgent','high'].includes(task.priority)).sort(sortTasks);
   const mustIds=new Set(must.map(task=>task.id));
   const planned=tasks.filter(task=>active(task)&&state.dailyPlan[task.id]&&!mustIds.has(task.id)&&!isOverdue(task)).sort(sortTasks);
@@ -182,7 +203,7 @@ async function refreshTemporalViews(){
     state.dailyPlan=Object.fromEntries(planData.allocations.map(item=>[item.task_id,item]));
     state.planBlocks=confirmedPlan.blocks;state.planState=confirmedPlan.plan_state;
     state.focus=focusData.session;
-    if(state.view==='today')render();
+    if(!document.querySelector('dialog[open]')&&['today','personal','research','course','inbox','week','month','schedule'].includes(state.view))render();
   }finally{temporalRefreshing=false}
 }
 
@@ -195,6 +216,15 @@ function renderFreeLearning(){
   const tasks=viewTasks().sort(sortTasks),ongoing=tasks.filter(active);
   const recorded=tasks.reduce((sum,task)=>sum+Number(task.actual_minutes||0),0);
   return `<div class="domain-intro research"><div><p>自由学习</p><h2>随时继续，不受截止日期驱动</h2></div><div><strong>${ongoing.length}</strong><span>可继续的学习任务</span></div><div><strong>${recorded?fmtDuration(recorded):'0 分钟'}</strong><span>累计记录投入</span></div></div>${listSection('自由学习任务',tasks,'新建任务时选择“自由学习”，或从科研文献快速开始。')}`;
+}
+
+function themeAncestor(task){const seen=new Set();let current=task;while(current&&!seen.has(current.id)){if(current.is_theme)return current;seen.add(current.id);current=state.tasks.find(item=>item.id===(current.parent_task_id||current.parent_id))}return null}
+function renderThemes(){
+  const themes=state.tasks.filter(task=>task.is_theme&&matchesFilters(task)).sort(sortTasks);
+  return `<div class="domain-intro research"><div><p>长期主题</p><h2>用一个大课题承载探索与具体行动</h2></div><div><strong>${themes.length}</strong><span>大课题 / 大横向</span></div><button class="primary-btn" id="new-theme">＋ 新建长期主题</button></div>${themes.length?themes.map(theme=>{
+    const children=state.tasks.filter(task=>task.id!==theme.id&&themeAncestor(task)?.id===theme.id&&matchesFilters(task)).sort(sortTasks);
+    const finished=children.filter(task=>task.status==='completed').length;
+    return `<section class="theme-group"><div class="theme-group-head"><div><small>LONG-TERM THEME · ${esc(DOMAINS[theme.domain]||theme.domain)}</small><h2>${esc(theme.title)}</h2><p>${esc(theme.description||'可持续拆解、随时探索，不以单个截止日期衡量。')} · ${finished}/${children.length} 个子任务完成</p></div><div class="theme-actions"><button class="secondary-btn" data-theme-child="${theme.id}">＋ 子任务</button><button class="secondary-btn" data-theme-explore="${theme.id}">◉ 自由探索</button><button class="edit-btn" data-edit="${theme.id}">编辑</button></div></div>${children.length?`<div class="task-list">${children.map(task=>taskCard(task)).join('')}</div>`:'<div class="empty">暂无子任务。可以先添加具体行动，或启动不设倒计时的探索。</div>'}</section>`}).join(''):'<div class="empty"><strong>还没有长期主题</strong>创建一个大课题，再在其下添加小任务或自由探索。</div>'}`;
 }
 
 function renderDomain(domain){
@@ -211,11 +241,13 @@ function listSection(title,tasks,emptyText='暂无任务',showDailyAllocation=fa
 function taskCard(task,dailyAllocation=null){
   const done=task.status==='completed';
   const focus=activeFocusForTask(task),displayProgress=taskDisplayProgress(task),deadline=taskDeadline(task),overdue=isOverdue(task);
-  const free=task.task_kind==='free_learning',timed=task.schedule_mode==='time_block';
+  const free=task.task_kind==='free_learning',timed=task.schedule_mode==='time_block',theme=themeAncestor(task);
+  const phase=timed&&active(task)?timeBlockPhase(task):null;
+  const statusText=phase==='overdue'?'已过期':phase==='ongoing'?'进行中':STATUSES[task.status];
   const meta=timed?[DOMAINS[task.domain],task.subcategory,`${fmtDate(task.scheduled_date)} ${task.scheduled_start_time||''}–${task.scheduled_end_time||''}`,task.is_recurring?`每周重复至 ${fmtDate(task.recurrence_until)}`:'单次占用'].filter(Boolean).join(' · '):free?[DOMAINS[task.domain],task.subcategory,'自由学习',`已投入 ${task.actual_minutes?fmtDuration(task.actual_minutes):'0 分钟'}`,`当前时长上限 ${fmtDuration(task.estimated_minutes)}`].filter(Boolean).join(' · '):[DOMAINS[task.domain],task.subcategory,deadline?`截止 ${fmtDate(deadline)}`:'无 Deadline',fmtDuration(task.estimated_minutes),dailyAllocation?`今日建议 ${fmtDuration(dailyAllocation.planned_minutes)}`:''].filter(Boolean).join(' · ');
-  return `<article class="task-card ${task.domain} ${done?'done':''} ${focus?'focus-running':''} ${isOverdue(task)?'overdue':''}" data-task-context="${task.id}">
+  return `<article class="task-card ${task.domain} ${done?'done':''} ${focus?'focus-running':''} ${isOverdue(task)?'overdue':''} ${pendingSubmission(task)?'submission-pending':''}" data-task-context="${task.id}">
     <input class="check" type="checkbox" aria-label="标记完成" data-check="${task.id}" ${done?'checked':''} ${task.status==='cancelled'?'disabled':''}>
-    <div class="task-main"><div class="task-title-row"><h3>${esc(task.title)}</h3><span class="status-badge ${task.status}">${STATUSES[task.status]}</span>${overdue?'<span class="status-badge overdue">已过期</span>':''}${free?'<span class="badge">自由学习</span>':''}${timed?'<span class="badge time-block">时间段</span>':''}${task.is_recurring?'<span class="badge">重复</span>':''}</div><p>${esc(meta)}</p>${focus?`<div class="task-focus-live" data-focus-task-live="${task.id}"><span><i></i>${focus.status==='paused'?'专注已暂停':'正在专注'}</span><time>${focusClock(focusElapsed(focus))}</time><b>${free?'持续投入':`${displayProgress}%`}</b></div>`:''}${task.description?`<p class="description">${esc(task.description)}</p>`:''}${task.tags?.length?`<div class="tag-row">${task.tags.map(tag=>`<span>#${esc(tag)}</span>`).join('')}</div>`:''}<div class="progress-track" data-task-progress="${task.id}" title="${free?'完成度由你手动记录':`完成度 ${displayProgress}%`}"><i style="width:${displayProgress}%"></i></div></div>
+    <div class="task-main"><div class="task-title-row"><h3>${esc(task.title)}</h3><span class="status-badge ${phase==='overdue'?'overdue':phase==='ongoing'?'in_progress':task.status}">${statusText}</span>${overdue&&phase!=='overdue'?'<span class="status-badge overdue">已过期</span>':''}${pendingSubmission(task)?'<span class="badge submission-label">待提交</span>':''}${free?'<span class="badge">自由学习</span>':''}${timed?'<span class="badge time-block">时间段</span>':''}${task.is_recurring?'<span class="badge">重复</span>':''}</div><p>${theme&&theme.id!==task.id?`${esc(theme.title)} · `:''}${esc(meta)}${task.submission_required?` · ${task.submission_completed_at?'已提交':'待提交'}${task.submission_material?`：${esc(task.submission_material)}`:''}`:''}</p>${focus?`<div class="task-focus-live" data-focus-task-live="${task.id}"><span><i></i>${focus.status==='paused'?'专注已暂停':'正在专注'}</span><time>${focusClock(focusElapsed(focus))}</time><b>${free?'持续投入':`${displayProgress}%`}</b></div>`:''}${task.description?`<p class="description">${esc(task.description)}</p>`:''}${task.tags?.length?`<div class="tag-row">${task.tags.map(tag=>`<span>#${esc(tag)}</span>`).join('')}</div>`:''}<div class="progress-track" data-task-progress="${task.id}" title="${free?'完成度由你手动记录':`完成度 ${displayProgress}%`}"><i style="width:${displayProgress}%"></i></div></div>
     <div class="task-controls"><select data-priority="${task.id}" aria-label="修改优先级" class="priority-select ${task.priority}">${Object.entries(PRIORITIES).map(([key,label])=>`<option value="${key}" ${key===task.priority?'selected':''}>${label}优先级</option>`).join('')}</select>${timed?'<span class="free-learning-cadence">固定占用</span>':free?'<span class="free-learning-cadence">随时开始</span>':`<input type="date" data-due="${task.id}" value="${deadline||''}" aria-label="修改截止日期">`}<button class="edit-btn" data-edit="${task.id}" aria-label="编辑任务">编辑</button><button class="more-btn" data-task-menu="${task.id}" aria-label="任务快捷操作">⋯</button></div>
   </article>`;
 }
@@ -236,14 +268,14 @@ function renderActiveFocusBanner(){
   return `<section class="active-focus-banner" data-active-focus-banner><div class="active-focus-signal"><i></i><span>ACTIVE FOCUS</span></div><div><small>${focus.status==='paused'?'本轮已暂停':focus.status==='awaiting_action'?'等待确认':'任务正在推进'}</small><strong>${esc(task.title)}</strong><p>${focusBannerMetrics(task,focus)}</p></div><button class="secondary-btn" id="resume-active-focus">返回专注</button></section>`;
 }
 
-function eventSection(title,events,emptyText){return `<div class="section-head"><h2>${title}</h2><span>${events.length} 项</span></div>${events.length?`<div class="event-list">${events.map(event=>{const taskEvent=event.source_type==='task';return `<div class="event-row"><div><b>${esc(event.start_time)}–${esc(event.end_time)} · ${esc(event.title)}</b><span>${taskEvent?'时间段任务':`${esc(event.location||'地点待定')} · 第 ${event.week} 周`}</span></div><button class="more-btn" ${taskEvent?`data-edit="${event.task_id}"`:`data-course-menu="${event.course_id}" data-meeting-id="${event.meeting_id}" data-event-date="${event.date}"`} aria-label="快捷操作">⋯</button></div>`}).join('')}</div>`:`<div class="empty">${emptyText}</div>`}`}
+function eventSection(title,events,emptyText){return `<div class="section-head"><h2>${title}</h2><span>${events.length} 项</span></div>${events.length?`<div class="event-list">${events.map(event=>{const taskEvent=event.source_type==='task',pending=pendingEventSubmission(event);return `<div class="event-row ${pending?'submission-pending':''}" style="--stripe-base:${esc(event.color||'#4f77bb')}"><div><b>${esc(event.start_time)}–${esc(event.end_time)} · ${esc(event.title)}</b><span>${taskEvent?'时间段任务':`${esc(event.location||'地点待定')} · 第 ${event.week} 周`}${pending?` · ${taskEvent?'待提交资料':'待交作业'}${esc(taskEvent?event.submission_material||'':event.submission.material||'')?`：${esc(taskEvent?event.submission_material:event.submission.material)}`:''}`:''}</span></div><button class="more-btn" ${taskEvent?`data-edit="${event.task_id}"`:`data-course-menu="${event.course_id}" data-meeting-id="${event.meeting_id}" data-event-date="${event.date}"`} aria-label="快捷操作">⋯</button></div>`}).join('')}</div>`:`<div class="empty">${emptyText}</div>`}`}
 
 function clockMinutes(value){const [hours,minutes]=String(value||'').split(':').map(Number);return Number.isFinite(hours)&&Number.isFinite(minutes)?hours*60+minutes:null}
-function timedCalendarEvent(event,style){const taskEvent=event.source_type==='task',action=taskEvent?`data-edit="${event.task_id}"`:`data-course-menu="${event.course_id}" data-meeting-id="${event.meeting_id}" data-event-date="${event.date}"`;return `<button class="week-timed-event ${taskEvent?'time-block':'course'}" style="${style};--event-color:${esc(event.color||'#4f77bb')}" ${action}><time>${esc(event.start_time)}–${esc(event.end_time)}</time><b>${esc(event.title)}</b><span>${esc(taskEvent?'时间段任务':event.location||'地点待定')}</span></button>`}
+function timedCalendarEvent(event,style){const taskEvent=event.source_type==='task',action=taskEvent?`data-edit="${event.task_id}"`:`data-course-menu="${event.course_id}" data-meeting-id="${event.meeting_id}" data-event-date="${event.date}"`,pending=pendingEventSubmission(event);return `<button class="week-timed-event ${taskEvent?'time-block':'course'} ${pending?'submission-pending':''}" style="${style};--event-color:${esc(event.color||'#4f77bb')};--stripe-base:${esc(event.color||'#4f77bb')}" ${action}><time>${esc(event.start_time)}–${esc(event.end_time)}</time><b>${esc(event.title)}</b><span>${esc(pending?(taskEvent?'待提交资料':'待交作业'):(taskEvent?'时间段任务':event.location||'地点待定'))}</span></button>`}
 function renderWeek(){
   const start=new Date();start.setHours(0,0,0,0);
   const days=Array.from({length:7},(_,index)=>addDays(start,index)),dates=new Set(days.map(iso));
-  const tasks=state.tasks.filter(matchesFilters),events=state.events.filter(event=>dates.has(event.date));
+  const tasks=state.tasks.filter(task=>matchesFilters(task)&&!task.is_theme),events=state.events.filter(event=>dates.has(event.date));
   const timed=[...events,...(state.planBlocks||[]).filter(block=>dates.has(block.block_date))];
   const starts=timed.map(item=>clockMinutes(item.start_time)).filter(Number.isFinite),ends=timed.map(item=>clockMinutes(item.end_time)).filter(Number.isFinite);
   const profileStart=clockMinutes(state.planningProfile?.workday_start),profileEnd=clockMinutes(state.planningProfile?.workday_end);
@@ -252,7 +284,7 @@ function renderWeek(){
   const labels=[];for(let minute=rangeStart;minute<rangeEnd;minute+=60)labels.push(`<span style="top:${(minute-rangeStart)/60*hourHeight}px">${pad(Math.floor(minute/60))}:00</span>`);
   const position=(from,to)=>{const startMinute=clockMinutes(from),endMinute=clockMinutes(to);if(startMinute===null||endMinute===null)return null;return `top:${Math.max(0,(startMinute-rangeStart)/60*hourHeight)}px;height:${Math.max(28,(endMinute-startMinute)/60*hourHeight-3)}px`};
   const headers=days.map((day,index)=>`<div class="week-day-head ${index===0?'today':''}"><span>${['周日','周一','周二','周三','周四','周五','周六'][day.getDay()]}</span><strong>${day.getMonth()+1}/${day.getDate()}</strong></div>`).join('');
-  const allDay=days.map(day=>{const date=iso(day),daily=tasks.filter(task=>task.start_date===date||taskDeadline(task)===date).sort(sortTasks);return `<div class="week-all-day-cell">${daily.map(task=>`<button class="week-task-chip ${task.domain} ${task.status==='completed'?'done':''} ${isOverdue(task)?'overdue':''}" data-task-context="${task.id}" data-edit="${task.id}"><b>${taskDeadline(task)===date?'D':'S'}</b><span>${esc(task.title)}</span></button>`).join('')||'<span class="week-free">留白</span>'}</div>`}).join('');
+  const allDay=days.map(day=>{const date=iso(day),daily=tasks.filter(task=>task.schedule_mode!=='time_block'&&(task.start_date===date||taskDeadline(task)===date)).sort(sortTasks);return `<div class="week-all-day-cell">${daily.map(task=>`<button class="week-task-chip ${task.domain} ${task.status==='completed'?'done':''} ${isOverdue(task)?'overdue':''} ${pendingSubmission(task)?'submission-pending':''}" data-task-context="${task.id}" data-edit="${task.id}"><b>${taskDeadline(task)===date?'D':'S'}</b><span>${esc(task.title)}</span></button>`).join('')||'<span class="week-free">留白</span>'}</div>`}).join('');
   const lanes=days.map((day,index)=>{const date=iso(day),classes=events.filter(event=>event.date===date),blocks=(state.planBlocks||[]).filter(block=>block.block_date===date),now=new Date(),nowMinute=now.getHours()*60+now.getMinutes(),nowLine=index===0&&nowMinute>=rangeStart&&nowMinute<=rangeEnd?`<i class="week-now-line" style="top:${(nowMinute-rangeStart)/60*hourHeight}px"><b>现在</b></i>`:'';return `<div class="week-time-lane ${index===0?'today':''}" style="height:${laneHeight}px">${nowLine}${classes.map(event=>{const style=position(event.start_time,event.end_time);return style?timedCalendarEvent(event,style):''}).join('')}${blocks.map(block=>{const style=position(block.start_time,block.end_time),task=state.tasks.find(item=>item.id===block.task_id),title=block.block_type==='focus'?(task?.title||block.task_title||'专注任务'):planTypeLabel(block.block_type);if(!style)return '';return block.block_type==='focus'?`<button class="week-timed-event plan focus" style="${style}" data-plan-focus="${block.task_id}" data-plan-block="${block.id||''}"><time>${esc(block.start_time)}–${esc(block.end_time)}</time><b>${esc(title)}</b></button>`:`<div class="week-timed-event plan rest" style="${style}"><time>${esc(block.start_time)}–${esc(block.end_time)}</time><b>${esc(title)}</b></div>`}).join('')}</div>`}).join('');
   return `<div class="week-legend"><span><i class="course"></i>课程占用</span><span><i class="time-block"></i>时间段任务</span><span><i class="focus"></i>专注计划</span><span><b>D</b> Deadline</span><span><b>S</b> 计划开始</span></div><div class="week-scroll"><div class="week-timeline"><div class="week-corner">全天事项</div>${headers}<div class="week-all-day-label">任务</div>${allDay}<div class="week-time-axis" style="height:${laneHeight}px">${labels.join('')}</div>${lanes}</div></div>`;
 }
@@ -261,9 +293,9 @@ function monthStart(date){const first=new Date(date.getFullYear(),date.getMonth(
 function renderMonth(){
   const year=state.month.getFullYear(),month=state.month.getMonth(),start=monthStart(state.month);
   const days=Array.from({length:42},(_,index)=>addDays(start,index));
-  const tasks=state.tasks.filter(matchesFilters);
+  const tasks=state.tasks.filter(task=>matchesFilters(task)&&!task.is_theme);
   const noDeadline=tasks.filter(task=>active(task)&&task.task_kind!=='free_learning'&&!taskDeadline(task)&&['urgent','high'].includes(task.priority)).sort(sortTasks);
-  return `<div class="month-nav"><button id="prev-month">‹ 上个月</button><h2>${year} 年 ${month+1} 月</h2><button id="next-month">下个月 ›</button></div><div class="calendar">${['一','二','三','四','五','六','日'].map(day=>`<div class="calendar-weekday">周${day}</div>`).join('')}${days.map(day=>{const date=iso(day);const daily=tasks.filter(task=>taskDeadline(task)===date).sort(sortTasks);const classes=state.events.filter(event=>event.date===date);return `<div class="calendar-day ${day.getMonth()!==month?'outside':''} ${date===today()?'today':''}"><span class="num">${day.getDate()}</span>${classes.slice(0,2).map(event=>`<button class="calendar-course" ${event.source_type==='task'?`data-edit="${event.task_id}"`:`data-course-menu="${event.course_id}" data-meeting-id="${event.meeting_id}" data-event-date="${event.date}"`}>${esc(event.start_time)} ${esc(event.title)}</button>`).join('')}${daily.slice(0,Math.max(0,4-classes.length)).map(task=>`<button class="cal-task ${task.domain} ${isOverdue(task)?'overdue':''}" data-task-context="${task.id}" data-edit="${task.id}">${task.status==='completed'?'✓ ':isOverdue(task)?'逾 ':''}${esc(task.title)}</button>`).join('')}${daily.length+classes.length>4?`<div class="cal-more">另 ${daily.length+classes.length-4} 项</div>`:''}</div>`}).join('')}</div>${listSection('高优先级但尚无 Deadline',noDeadline,'目前没有需要补充 Deadline 的高优先级任务。')}`;
+  return `<div class="month-nav"><button id="prev-month">‹ 上个月</button><h2>${year} 年 ${month+1} 月</h2><button id="next-month">下个月 ›</button></div><div class="calendar">${['一','二','三','四','五','六','日'].map(day=>`<div class="calendar-weekday">周${day}</div>`).join('')}${days.map(day=>{const date=iso(day);const daily=tasks.filter(task=>taskDeadline(task)===date).sort(sortTasks);const classes=state.events.filter(event=>event.date===date);return `<div class="calendar-day ${day.getMonth()!==month?'outside':''} ${date===today()?'today':''}"><span class="num">${day.getDate()}</span>${classes.slice(0,2).map(event=>`<button class="calendar-course ${pendingEventSubmission(event)?'submission-pending':''}" style="--stripe-base:${esc(event.color||'#4f77bb')}" ${event.source_type==='task'?`data-edit="${event.task_id}"`:`data-course-menu="${event.course_id}" data-meeting-id="${event.meeting_id}" data-event-date="${event.date}"`}>${pendingEventSubmission(event)?'待交 · ':''}${esc(event.start_time)} ${esc(event.title)}</button>`).join('')}${daily.slice(0,Math.max(0,4-classes.length)).map(task=>`<button class="cal-task ${task.domain} ${isOverdue(task)?'overdue':''} ${pendingSubmission(task)?'submission-pending':''}" data-task-context="${task.id}" data-edit="${task.id}">${task.status==='completed'?'✓ ':isOverdue(task)?'逾 ':''}${esc(task.title)}</button>`).join('')}${daily.length+classes.length>4?`<div class="cal-more">另 ${daily.length+classes.length-4} 项</div>`:''}</div>`}).join('')}</div>${listSection('高优先级但尚无 Deadline',noDeadline,'目前没有需要补充 Deadline 的高优先级任务。')}`;
 }
 
 function mondayOf(value){const day=new Date(value);day.setHours(0,0,0,0);day.setDate(day.getDate()-(day.getDay()||7)+1);return day}
@@ -277,7 +309,7 @@ function renderSchedule(){
     cells.push(`<div class="schedule-cell period">第 ${period} 节</div>`);
     for(const day of days){
       const entries=weekEvents.filter(event=>event.date===iso(day)&&event.start_period===period);
-      cells.push(`<div class="schedule-cell">${entries.map(event=>`<button class="course-event" style="border-left-color:${esc(event.color)}" data-course-menu="${event.course_id}" data-meeting-id="${event.meeting_id}" data-event-date="${event.date}"><b>${esc(event.title)}</b><span>${esc(event.start_time)}–${esc(event.end_time)}<br>${esc(event.location||'地点待定')}</span></button>`).join('')}</div>`);
+      cells.push(`<div class="schedule-cell">${entries.map(event=>`<button class="course-event ${pendingEventSubmission(event)?'submission-pending':''}" style="border-left-color:${esc(event.color)};--stripe-base:${esc(event.color)}" data-course-menu="${event.course_id}" data-meeting-id="${event.meeting_id}" data-event-date="${event.date}"><b>${esc(event.title)}</b><span>${esc(event.start_time)}–${esc(event.end_time)}<br>${esc(event.location||'地点待定')}${pendingEventSubmission(event)?'<br>待交作业':''}</span></button>`).join('')}</div>`);
     }
   }
   return `<div class="schedule-toolbar"><label class="field"><span>当前学期</span><select id="semester-filter"><option value="">全部学期</option>${semesterOptions}</select></label><button class="secondary-btn" id="edit-current-semester">修改学期</button><button class="secondary-btn" id="schedule-prev">‹ 上一周</button><button class="secondary-btn" id="schedule-today">本周</button><button class="secondary-btn" id="schedule-next">下一周 ›</button><button class="primary-btn" id="import-schedule">导入课表</button></div>${state.semesters.length?`<div class="schedule-board">${cells.join('')}</div>`:'<div class="empty"><strong>还没有课程表</strong>导入 PDF、图片、XLSX 或 CSV，核对预览后再加入日程。<br><br><button class="primary-btn" id="import-schedule-empty">导入第一份课表</button></div>'}`;
@@ -354,6 +386,9 @@ async function dismissResearch(itemId){if(!confirm('从科研收件箱忽略这�
 
 function bindDynamic(){
   if(state.view==='focus_analytics')bindFocusAnalytics();
+  if($('#new-theme'))$('#new-theme').onclick=()=>openDialog();
+  $$('[data-theme-child]').forEach(button=>button.onclick=()=>openDialog(null,button.dataset.themeChild));
+  $$('[data-theme-explore]').forEach(button=>button.onclick=()=>openThemeExploration(button.dataset.themeExplore));
   $$('[data-edit]').forEach(button=>button.onclick=()=>openDialog(state.tasks.find(task=>task.id===button.dataset.edit)));
   $$('[data-check]').forEach(input=>input.onchange=async()=>{const task=state.tasks.find(item=>item.id===input.dataset.check);try{await patchTask(task.id,{status:input.checked?'completed':'in_progress',progress:input.checked?100:Math.min(task.progress,95)});toast(input.checked?'任务已完成':'任务已恢复为进行中')}catch(error){input.checked=!input.checked;showError(error)}});
   $$('[data-priority]').forEach(select=>select.onchange=async()=>{const task=state.tasks.find(item=>item.id===select.dataset.priority);try{await patchTask(task.id,{priority:select.value});toast('优先级已更新')}catch(error){select.value=task.priority;showError(error)}});
@@ -399,21 +434,46 @@ function menuButton(label,action,danger=false){return `<button role="menuitem" d
 function positionMenu(x,y){const menu=$('#context-menu');menu.classList.remove('hidden');const rect=menu.getBoundingClientRect();menu.style.left=`${Math.max(8,Math.min(x,innerWidth-rect.width-8))}px`;menu.style.top=`${Math.max(8,Math.min(y,innerHeight-rect.height-8))}px`;menu.querySelector('button')?.focus()}
 function closeContextMenu(){$('#context-menu').classList.add('hidden')}
 function bindMenu(actions,x,y){const menu=$('#context-menu');menu.innerHTML=actions.html;menu.querySelectorAll('[data-menu-action]').forEach(button=>button.onclick=async()=>{closeContextMenu();try{await actions.run(button.dataset.menuAction)}catch(error){showError(error)}});positionMenu(x,y)}
-function showTaskMenu(id,x,y){const task=state.tasks.find(item=>item.id===id);if(!task)return;bindMenu({html:[menuButton('开始专注','focus'),menuButton('编辑','edit'),menuButton(task.status==='completed'?'恢复为进行中':'标记完成','toggle'),'<hr>',menuButton('改到今天','today'),menuButton('改到明天','tomorrow'),menuButton('改到下周','nextweek'),menuButton('清除截止日期','clear'),'<hr>',menuButton('复制任务','duplicate'),menuButton('移动领域…','move'),menuButton('移入回收站','delete',true)].join(''),run:async action=>{
+function showTaskMenu(id,x,y){const task=state.tasks.find(item=>item.id===id);if(!task)return;bindMenu({html:[menuButton('开始专注','focus'),menuButton('编辑','edit'),menuButton(task.status==='completed'?'恢复为进行中':'标记完成','toggle'),menuButton(task.submission_required?(task.submission_completed_at?'改为待提交资料':'标记资料已提交'):'设置待提交资料…','submission'),'<hr>',menuButton('改到今天','today'),menuButton('改到明天','tomorrow'),menuButton('改到下周','nextweek'),menuButton('清除截止日期','clear'),'<hr>',menuButton('复制任务','duplicate'),menuButton('移动领域…','move'),menuButton('移入回收站','delete',true)].join(''),run:async action=>{
     if(action==='focus')return openFocus(id);
     if(action==='edit')return openDialog(task);
     if(action==='toggle')return patchTask(id,{status:task.status==='completed'?'in_progress':'completed'});
+    if(action==='submission'){
+      if(!task.submission_required){openDialog(task);$('#task-submission-required').checked=true;updateTaskSubmissionField();$('#task-submission-material').focus();return}
+      await patchTask(id,{submission_submitted:!task.submission_completed_at});return toast(task.submission_completed_at?'资料重新标为待提交':'资料已标记提交');
+    }
     if(['today','tomorrow','nextweek','clear'].includes(action)){const dates={today:today(),tomorrow:iso(addDays(new Date(),1)),nextweek:iso(addDays(new Date(),7)),clear:null};await patchTask(id,{due_date:dates[action]});return toast('截止日期已更新')}
     if(action==='duplicate'){const copy={...task,title:`${task.title}（副本）`,status:'not_started',progress:0,completed_at:null};for(const key of ['id','created_at','updated_at','deleted_at','deadline','estimated_hours','actual_hours','parent_task_id'])delete copy[key];await createTask(copy);return toast('任务已复制')}
     if(action==='move'){const target=prompt('输入目标领域：research / course / personal / inbox',task.domain);if(target&&DOMAINS[target]){await patchTask(id,{domain:target});toast('任务领域已更新')}return}
     if(action==='delete')return trashTask(id);
   }},x,y)}
-function showCourseMenu(id,meetingId,eventDate,x,y){bindMenu({html:[menuButton('编辑课程','edit'),menuButton('复制课程','duplicate'),meetingId&&eventDate?menuButton('跳过本次','skip'):'',menuButton('移入回收站','delete',true)].join(''),run:async action=>{
+function showCourseMenu(id,meetingId,eventDate,x,y){bindMenu({html:[meetingId&&eventDate?menuButton('设置本次待交作业…','submission'):'',menuButton('编辑课程','edit'),menuButton('复制课程','duplicate'),meetingId&&eventDate?menuButton('跳过本次','skip'):'',menuButton('移入回收站','delete',true)].join(''),run:async action=>{
+    if(action==='submission')return openCourseSubmission(meetingId,eventDate);
     if(action==='edit')return openCourseDialog(id);
     if(action==='duplicate'){await api(`/api/courses/${id}/duplicate`,{method:'POST'});await loadTasks({migrate:false});return toast('课程已复制')}
     if(action==='skip'){await api(`/api/course-meetings/${meetingId}/exceptions`,{method:'POST',body:JSON.stringify({kind:'skip',date:eventDate})});await loadTasks({migrate:false});return toast('已跳过本次课程')}
     if(action==='delete')return trashCourse(id);
   }},x,y)}
+
+function openCourseSubmission(meetingId,eventDate){
+  const event=state.events.find(item=>item.meeting_id===meetingId&&item.date===eventDate);
+  if(!event)return toast('请刷新课表后重试');
+  const dialog=$('#course-submission-dialog');
+  dialog.dataset.meetingId=meetingId;dialog.dataset.eventDate=eventDate;
+  $('#course-submission-context').textContent=`${eventDate} · ${event.title} · ${event.start_time}–${event.end_time}`;
+  $('#course-submission-material').value=event.submission?.material||'';
+  $('#course-submission-completed').checked=Boolean(event.submission?.completed_at);
+  $('#remove-course-submission').classList.toggle('hidden',!event.submission);
+  dialog.showModal();
+}
+function closeCourseSubmission(){$('#course-submission-dialog').close()}
+async function saveCourseSubmission(event){
+  event.preventDefault();const dialog=$('#course-submission-dialog'),meetingId=dialog.dataset.meetingId,date=dialog.dataset.eventDate;
+  try{await api(`/api/course-meetings/${meetingId}/submissions/${date}`,{method:'PUT',body:JSON.stringify({material:$('#course-submission-material').value.trim(),submitted:$('#course-submission-completed').checked})});closeCourseSubmission();await loadTasks({migrate:false});toast('本次待交作业已保存')}catch(error){showError(error)}
+}
+async function removeCourseSubmission(){
+  const dialog=$('#course-submission-dialog');try{await api(`/api/course-meetings/${dialog.dataset.meetingId}/submissions/${dialog.dataset.eventDate}`,{method:'DELETE'});closeCourseSubmission();await loadTasks({migrate:false});toast('已移除本次待交作业')}catch(error){showError(error)}
+}
 
 async function trashTask(id){await api(`/api/tasks/${id}`,{method:'DELETE'});state.tasks=state.tasks.filter(item=>item.id!==id);render();toast('任务已移入回收站','撤销',async()=>{await api(`/api/tasks/${id}/restore`,{method:'POST'});await loadTasks({migrate:false})})}
 async function trashCourse(id){await api(`/api/courses/${id}`,{method:'DELETE'});await loadTasks({migrate:false});toast('课程已移入回收站','撤销',async()=>{await api(`/api/courses/${id}/restore`,{method:'POST'});await loadTasks({migrate:false})})}
@@ -421,16 +481,16 @@ async function loadTrash(){state.trash=await api('/api/trash');render()}
 async function restoreTrash(type,id){await api(type==='task'?`/api/tasks/${id}/restore`:`/api/courses/${id}/restore`,{method:'POST'});await loadTasks({migrate:false});await loadTrash();toast('条目已恢复')}
 async function permanentDelete(type,id){if(!confirm('永久删除后无法恢复，是否继续？'))return;await api(type==='task'?`/api/tasks/${id}/permanent`:`/api/courses/${id}/permanent`,{method:'DELETE'});await loadTrash();toast('条目已永久删除')}
 
-function openScheduleDialog(){state.schedulePreview=null;$('#schedule-form').reset();const now=new Date(),start=addDays(mondayOf(now),now.getDay()===0?7:0);$('#semester-name').value=`${start.getFullYear()} 秋季学期`;$('#semester-stage').value='研一上';$('#semester-start').value=iso(start);$('#semester-end').value=iso(addDays(start,118));$('#schedule-step-input').classList.remove('hidden');$('#schedule-preview').classList.add('hidden');$('#schedule-dialog').showModal()}
+function openScheduleDialog(){state.schedulePreview=null;$('#schedule-form').reset();const now=new Date(),start=addDays(mondayOf(now),now.getDay()===0?7:0);$('#semester-name').value=`${start.getFullYear()} 秋季学期`;$('#semester-stage').value='研一上';$('#semester-start').value=iso(start);$('#semester-end').value=iso(addDays(start,125));$('#schedule-step-input').classList.remove('hidden');$('#schedule-preview').classList.add('hidden');$('#schedule-dialog').showModal()}
 function openSemesterDialog(id){const semester=state.semesters.find(item=>item.id===id)||currentSemester();if(!semester)return toast('请先导入一个学期');$('#edit-semester-id').value=semester.id;$('#edit-semester-name').value=semester.name;$('#edit-semester-stage').value=semester.stage_label||'';$('#edit-semester-start').value=semester.start_date;$('#edit-semester-end').value=semester.end_date;$('#semester-dialog').showModal()}
-function meetingWeekValue(meeting){return meeting.week_pattern==='custom'?`${(meeting.custom_weeks||[]).join(',')} custom`:`${meeting.start_week||1}-${meeting.end_week||18} ${meeting.week_pattern||'all'}`}
-function previewMeetingRow(meeting,index){return `<div class="preview-meeting" data-meeting-index="${index}"><select data-meeting-field="weekday">${[1,2,3,4,5,6,7].map(day=>`<option value="${day}" ${day===meeting.weekday?'selected':''}>周${'一二三四五六日'[day-1]}</option>`).join('')}</select><input type="number" data-meeting-field="start_period" value="${meeting.start_period||1}" min="1" max="30" placeholder="开始节"><input type="number" data-meeting-field="end_period" value="${meeting.end_period||1}" min="1" max="30" placeholder="结束节"><input type="time" data-meeting-field="start_time" value="${meeting.start_time||''}"><input type="time" data-meeting-field="end_time" value="${meeting.end_time||''}"><input data-meeting-field="weeks" value="${esc(meetingWeekValue(meeting))}" title="1-16 all、1-16 odd 或 1,3,5 custom"><input data-meeting-field="teacher_override" value="${esc(meeting.teacher_override||'')}" placeholder="本课次教师"><input data-meeting-field="location_override" value="${esc(meeting.location_override||'')}" placeholder="本课次地点"></div>`}
+function previewMeetingRow(meeting,index){return `<div class="preview-meeting" data-meeting-index="${index}"><label><span>星期</span><select data-meeting-field="weekday">${[1,2,3,4,5,6,7].map(day=>`<option value="${day}" ${day===meeting.weekday?'selected':''}>周${'一二三四五六日'[day-1]}</option>`).join('')}</select></label><label><span>开始节</span><input type="number" data-meeting-field="start_period" value="${meeting.start_period??1}" min="1" max="30"></label><label><span>结束节</span><input type="number" data-meeting-field="end_period" value="${meeting.end_period??1}" min="1" max="30"></label><label><span>开始时间</span><input type="time" data-meeting-field="start_time" value="${escAttr(meeting.start_time||'')}"></label><label><span>结束时间</span><input type="time" data-meeting-field="end_time" value="${escAttr(meeting.end_time||'')}"></label><label><span>开始周</span><input type="number" data-meeting-field="start_week" value="${meeting.start_week??1}" min="1" max="53"></label><label><span>结束周</span><input type="number" data-meeting-field="end_week" value="${meeting.end_week??18}" min="1" max="53"></label><label><span>周次规则</span><select data-meeting-field="week_pattern">${[['all','每周'],['odd','单周'],['even','双周'],['custom','指定周']].map(([value,label])=>`<option value="${value}" ${value===meeting.week_pattern?'selected':''}>${label}</option>`).join('')}</select></label><label><span>指定周（逗号分隔）</span><input data-meeting-field="custom_weeks" value="${escAttr((meeting.custom_weeks||[]).join(','))}" placeholder="如 1,3,5" ${meeting.week_pattern==='custom'?'':'disabled'}></label><label><span>本课次教师</span><input data-meeting-field="teacher_override" value="${escAttr(meeting.teacher_override||'')}"></label><label><span>本课次地点</span><input data-meeting-field="location_override" value="${escAttr(meeting.location_override||'')}"></label></div>`}
 function previewLearningItems(items){if(!items?.length)return '';return `<div class="section-head preview-learning-head"><h2>无固定时间课程</h2><span>将建立自由学习任务</span></div><div class="preview-learning-items">${items.map((item,index)=>`<div data-learning-index="${index}"><input type="checkbox" data-learning-field="selected" ${item.selected?'checked':''}><input data-learning-field="title" value="${esc(item.title)}" placeholder="课程名称"><input data-learning-field="teacher" value="${esc(item.teacher||'')}" placeholder="教师"><input data-learning-field="class_name" value="${esc(item.class_name||'')}" placeholder="班级 / MOOC 时间"></div>`).join('')}</div>`}
-function renderSchedulePreview(){const preview=state.schedulePreview;const node=$('#schedule-preview');node.classList.remove('hidden');$('#schedule-step-input').classList.add('hidden');node.innerHTML=`<div class="section-head"><h2>核对识别结果</h2><span>${preview.courses.length} 门课程</span></div>${preview.warnings.map(item=>`<p class="preview-message">${esc(item)}</p>`).join('')}<div class="schedule-preview-list">${preview.courses.map((course,index)=>`<div class="preview-course ${course.errors.length?'invalid':''}" data-preview-index="${index}"><div class="preview-course-head"><input type="checkbox" data-course-field="selected" ${course.selected?'checked':''} ${course.errors.length?'disabled':''}><input data-course-field="name" value="${esc(course.name)}" placeholder="课程名称"><input data-course-field="teacher" value="${esc(course.teacher)}" placeholder="默认教师"><input data-course-field="location" value="${esc(course.location)}" placeholder="默认地点"></div><div class="preview-meetings"><small>星期 · 节次 · 时间 · 周次规则 · 本课次教师/地点</small>${course.meetings.map(previewMeetingRow).join('')}</div>${[...course.errors,...course.warnings].map(item=>`<p class="preview-message">${esc(item)}</p>`).join('')}</div>`).join('')}</div>${previewLearningItems(preview.learning_items)}<div class="dialog-actions"><button class="secondary-btn" type="button" id="preview-back">返回</button><span></span><button class="secondary-btn" type="button" id="preview-cancel">取消</button><button class="primary-btn" type="button" id="confirm-schedule">确认导入</button></div>`;
+function renderSchedulePreview(){const preview=state.schedulePreview;const node=$('#schedule-preview');node.classList.remove('hidden');$('#schedule-step-input').classList.add('hidden');node.innerHTML=`<div class="section-head"><h2>核对识别结果</h2><span>${preview.courses.length} 门课程</span></div><p class="form-hint">识别有误的课程默认不导入；修改字段后勾选即可。开始周、结束周请分别填写数字。</p>${preview.warnings.map(item=>`<p class="preview-message">${esc(item)}</p>`).join('')}<div class="schedule-preview-list">${preview.courses.map((course,index)=>`<div class="preview-course ${course.errors.length?'invalid':''}" data-preview-index="${index}"><div class="preview-course-head"><input type="checkbox" data-course-field="selected" aria-label="导入 ${escAttr(course.name)}" ${course.selected?'checked':''}><input data-course-field="name" value="${escAttr(course.name)}" placeholder="课程名称"><input data-course-field="teacher" value="${escAttr(course.teacher)}" placeholder="默认教师"><input data-course-field="location" value="${escAttr(course.location)}" placeholder="默认地点"></div><div class="preview-meetings"><small>逐项核对星期、节次、时间和周次</small>${course.meetings.map(previewMeetingRow).join('')}</div>${[...course.errors,...course.warnings].map(item=>`<p class="preview-message">${esc(item)}</p>`).join('')}</div>`).join('')}</div>${previewLearningItems(preview.learning_items)}<div class="dialog-actions"><button class="secondary-btn" type="button" id="preview-back">返回</button><span></span><button class="secondary-btn" type="button" id="preview-cancel">取消</button><button class="primary-btn" type="button" id="confirm-schedule">确认导入</button></div>`;
+  $$('[data-meeting-field="week_pattern"]').forEach(select=>select.onchange=()=>{select.closest('[data-meeting-index]').querySelector('[data-meeting-field="custom_weeks"]').disabled=select.value!=='custom'});
   $('#preview-back').onclick=()=>{$('#schedule-step-input').classList.remove('hidden');node.classList.add('hidden')};$('#preview-cancel').onclick=()=>$('#schedule-dialog').close();$('#confirm-schedule').onclick=confirmScheduleImport;
 }
-function collectSchedulePreview(){const preview=structuredClone(state.schedulePreview);$$('[data-preview-index]').forEach(card=>{const course=preview.courses[Number(card.dataset.previewIndex)],courseField=name=>card.querySelector(`[data-course-field="${name}"]`);course.selected=courseField('selected').checked;course.name=courseField('name').value.trim();course.teacher=courseField('teacher').value.trim();course.location=courseField('location').value.trim();course.meetings=[...card.querySelectorAll('[data-meeting-index]')].map(row=>{const field=name=>row.querySelector(`[data-meeting-field="${name}"]`),meeting=course.meetings[Number(row.dataset.meetingIndex)]||{},[range,pattern='all']=field('weeks').value.trim().split(/\s+/),numbers=range.split(pattern==='custom'?/,/:/-/).map(Number).filter(Number.isFinite),custom=pattern==='custom'?numbers:[];return {...meeting,weekday:Number(field('weekday').value),start_period:Number(field('start_period').value),end_period:Number(field('end_period').value),start_time:field('start_time').value,end_time:field('end_time').value,start_week:Math.min(...numbers),end_week:Math.max(...numbers),week_pattern:pattern,custom_weeks:custom,teacher_override:field('teacher_override').value.trim(),location_override:field('location_override').value.trim()}})});$$('[data-learning-index]').forEach(row=>{const item=preview.learning_items[Number(row.dataset.learningIndex)],field=name=>row.querySelector(`[data-learning-field="${name}"]`);item.selected=field('selected').checked;item.title=field('title').value.trim();item.teacher=field('teacher').value.trim();item.class_name=field('class_name').value.trim()});return preview}
-async function confirmScheduleImport(){const preview=collectSchedulePreview();await api('/api/schedule-import/confirm',{method:'POST',body:JSON.stringify(preview)});$('#schedule-dialog').close();await loadTasks({migrate:false});state.view='schedule';render();toast('课表已加入日程')}
+function collectSchedulePreview(){const preview=structuredClone(state.schedulePreview);$$('[data-preview-index]').forEach(card=>{const course=preview.courses[Number(card.dataset.previewIndex)],courseField=name=>card.querySelector(`[data-course-field="${name}"]`);course.selected=courseField('selected').checked;course.name=courseField('name').value.trim();course.teacher=courseField('teacher').value.trim();course.location=courseField('location').value.trim();course.meetings=[...card.querySelectorAll('[data-meeting-index]')].map((row,index)=>{const field=name=>row.querySelector(`[data-meeting-field="${name}"]`),meeting=course.meetings[Number(row.dataset.meetingIndex)]||{},startWeek=Number(field('start_week').value),endWeek=Number(field('end_week').value),pattern=field('week_pattern').value,customText=field('custom_weeks').value.trim(),custom=pattern==='custom'?customText.split(/[,，、]/).map(part=>Number(part.trim())):[];if(course.selected){const label=`${course.name||'未命名课程'}的第 ${index+1} 个课次`;if(!Number.isInteger(startWeek)||startWeek<1||!Number.isInteger(endWeek)||endWeek<startWeek)throw new Error(`${label}：开始周和结束周无效`);if(pattern==='custom'&&(!customText||custom.some(week=>!Number.isInteger(week)||week<startWeek||week>endWeek)))throw new Error(`${label}：指定周必须是范围内的整数，用逗号分隔`)}return {...meeting,weekday:Number(field('weekday').value),start_period:Number(field('start_period').value),end_period:Number(field('end_period').value),start_time:field('start_time').value,end_time:field('end_time').value,start_week:startWeek,end_week:endWeek,week_pattern:pattern,custom_weeks:custom,teacher_override:field('teacher_override').value.trim(),location_override:field('location_override').value.trim()}})});$$('[data-learning-index]').forEach(row=>{const item=preview.learning_items[Number(row.dataset.learningIndex)],field=name=>row.querySelector(`[data-learning-field="${name}"]`);item.selected=field('selected').checked;item.title=field('title').value.trim();item.teacher=field('teacher').value.trim();item.class_name=field('class_name').value.trim()});return preview}
+async function confirmScheduleImport(){try{const preview=collectSchedulePreview();await api('/api/schedule-import/confirm',{method:'POST',body:JSON.stringify(preview)});$('#schedule-dialog').close();await loadTasks({migrate:false});state.view='schedule';render();toast('课表已加入日程')}catch(error){showError(error)}}
 
 let editingCourseMeetings=[];
 async function openCourseDialog(id){const data=await api(`/api/courses/${id}`),course=data.course,meeting=course.meetings[0];editingCourseMeetings=structuredClone(course.meetings);$('#course-id').value=id;$('#course-name').value=course.name;$('#course-teacher').value=course.teacher;$('#course-location').value=course.location;$('#course-notes').value=course.notes;$('#course-weekday').value=meeting.weekday;$('#course-start-period').value=meeting.start_period;$('#course-end-period').value=meeting.end_period;$('#course-start-time').value=meeting.start_time;$('#course-end-time').value=meeting.end_time;$('#course-start-week').value=meeting.start_week;$('#course-end-week').value=meeting.end_week;$('#course-week-pattern').value=meeting.week_pattern==='custom'?'all':meeting.week_pattern;$('#course-dialog').showModal()}
@@ -438,7 +498,7 @@ async function openCourseDialog(id){const data=await api(`/api/courses/${id}`),c
 async function createTask(payload){const data=await api('/api/tasks',{method:'POST',body:JSON.stringify(payload)});state.tasks.push(data.task);render();return data.task}
 async function patchTask(id,changes){const data=await api(`/api/tasks/${id}`,{method:'PATCH',body:JSON.stringify(changes)});state.tasks=state.tasks.map(task=>task.id===id?data.task:task);render();return data.task}
 
-function openDialog(task=null){
+function openDialog(task=null,parentId=''){
   $('#task-form').reset();
   $('.advanced-settings').open=Boolean(task);
   $('#task-id').value=task?.id||'';
@@ -447,7 +507,12 @@ function openDialog(task=null){
   $('#open-quick-reading').classList.toggle('hidden',Boolean(task));
   $('#task-title').value=task?.title||'';
   $('#task-domain').value=task?.domain||(['research','course','personal','inbox'].includes(state.view)?state.view:'research');
-  $('#task-kind').value=task?.schedule_mode==='time_block'?'time_block':task?.task_kind||(state.view==='free_learning'?'free_learning':'standard');
+  $('#task-kind').value=task?.is_theme?'theme':task?.schedule_mode==='time_block'?'time_block':task?.task_kind||(state.view==='free_learning'?'free_learning':state.view==='themes'&&!parentId?'theme':'standard');
+  const currentParentId=task?.parent_task_id||task?.parent_id||parentId||'';
+  const availableThemes=state.tasks.filter(item=>(item.is_theme||item.id===currentParentId)&&item.id!==task?.id);
+  $('#task-parent').innerHTML='<option value="">不归属长期主题</option>'+availableThemes.map(item=>`<option value="${item.id}">${esc(item.title)}${item.is_theme?'':'（已有父任务）'}</option>`).join('');
+  $('#task-parent').value=task?.parent_task_id||task?.parent_id||parentId||'';
+  if(parentId){const parent=state.tasks.find(item=>item.id===parentId);if(parent)$('#task-domain').value=parent.domain}
   $('#task-paper').innerHTML='<option value="">不关联论文</option>'+state.researchAllItems.map(item=>`<option value="${item.id}">${esc(item.title)}</option>`).join('');
   $('#task-paper').value='';
   updateTaskPaperField(Boolean(task));
@@ -461,12 +526,16 @@ function openDialog(task=null){
   $('#task-block-weekly').checked=Boolean(task?.schedule_mode==='time_block'&&task?.is_recurring);
   $('#task-block-until').value=task?.recurrence_until||'';
   $('#task-block-until').disabled=!$('#task-block-weekly').checked;
+  $('#task-submission-required').checked=Boolean(task?.submission_required);
+  $('#task-submission-material').value=task?.submission_material||'';
+  $('#task-submission-submitted').checked=Boolean(task?.submission_completed_at);
+  updateTaskSubmissionField();
   updateTaskKindField();
   $('#task-priority').value=task?.priority||'medium';
   $('#task-status').value=task?.status||'not_started';
   $('#task-progress').value=task?.progress||0;
   $('#task-tags').value=(task?.tags||[]).join(', ');
-  $('#task-estimated').value=task?.estimated_minutes??60;
+  $('#task-estimated').value=task?.estimated_minutes??($('#task-kind').value==='theme'?0:60);
   $('#task-actual').value=task?.actual_minutes??0;
   $('#task-recurring').checked=Boolean(task?.is_recurring);
   $('#task-recurrence').disabled=!task?.is_recurring;
@@ -475,9 +544,39 @@ function openDialog(task=null){
   $('#task-dialog').showModal();
 }
 function closeDialog(){$('#task-dialog').close()}
-function updateTaskKindField(){const kind=$('#task-kind').value,free=kind==='free_learning',timed=kind==='time_block';$('#task-due-field').classList.toggle('hidden',free||timed);$('#task-due-date').disabled=free||timed;$('#task-time-block-fields').classList.toggle('hidden',!timed);if(free||timed)$('#task-due-date').value='';$('#task-kind-hint').textContent=free?'不设截止日期，不参与按日期自动分摊；投入会跨多次计时累计，到达当前时长上限后自动扩展。':timed?'按明确的日期和时间占据日历；自动规划会避让，发生重叠时仍可确认保存。':'目标任务按日期参与每日规划。'}
+function updateTaskKindField(){const kind=$('#task-kind').value,free=kind==='free_learning',timed=kind==='time_block',theme=kind==='theme';$('#task-due-field').classList.toggle('hidden',free||timed||theme);$('#task-due-date').disabled=free||timed||theme;$('#task-estimated').closest('label').classList.toggle('hidden',theme);$('#task-time-block-fields').classList.toggle('hidden',!timed);$('#task-parent-field').classList.toggle('hidden',theme);$('#task-parent').disabled=theme;if(free||timed||theme)$('#task-due-date').value='';if(theme){$('#task-parent').value='';$('#task-estimated').value=0}$('#task-kind-hint').textContent=theme?'大课题不设截止日期或预计工时；在其下拆分具体子任务，或开启自由探索。':free?'不设截止日期，不参与按日期自动分摊；投入会跨多次计时累计，到达当前时长上限后自动扩展。':timed?'按明确的日期和时间占据日历；自动规划会避让，发生重叠时仍可确认保存。':'目标任务按日期参与每日规划。'}
+function updateTaskSubmissionField(){$('#task-submission-fields').classList.toggle('hidden',!$('#task-submission-required').checked)}
 function updateTaskPaperField(editing=false){$('#task-paper-field').classList.toggle('hidden',editing||$('#task-domain').value!=='research')}
-function formPayload(){const selectedKind=$('#task-kind').value,timed=selectedKind==='time_block',free=selectedKind==='free_learning',scheduledDate=timed?$('#task-block-date').value||null:null,startDate=timed?scheduledDate:$('#task-start-date').value||null,dueDate=free||timed?null:$('#task-due-date').value||null,weekly=timed&&$('#task-block-weekly').checked;if(startDate&&dueDate&&startDate>dueDate)throw new Error('开始日期不能晚于截止日期');if(timed&&(!scheduledDate||!$('#task-block-start').value||!$('#task-block-end').value))throw new Error('时间段任务需要完整的日期和起止时间');if(timed&&$('#task-block-end').value<=$('#task-block-start').value)throw new Error('结束时间必须晚于开始时间');if(weekly&&!$('#task-block-until').value)throw new Error('每周重复需要填写结束日期');return {title:$('#task-title').value.trim(),domain:$('#task-domain').value,task_kind:free?'free_learning':'standard',schedule_mode:timed?'time_block':'flexible',scheduled_date:scheduledDate,scheduled_start_time:timed?$('#task-block-start').value:null,scheduled_end_time:timed?$('#task-block-end').value:null,schedule_timezone:'Asia/Shanghai',recurrence_until:weekly?$('#task-block-until').value:null,subcategory:$('#task-subcategory').value.trim(),description:$('#task-description').value.trim(),start_date:startDate,due_date:dueDate,priority:$('#task-priority').value,status:$('#task-status').value,progress:Number($('#task-progress').value)||0,tags:$('#task-tags').value.split(',').map(value=>value.trim()).filter(Boolean),estimated_minutes:Number($('#task-estimated').value)||0,actual_minutes:Number($('#task-actual').value)||0,is_recurring:timed?weekly:$('#task-recurring').checked,recurrence_rule:timed?(weekly?'weekly':''):($('#task-recurring').checked?$('#task-recurrence').value.trim():''),notes:$('#task-notes').value.trim(),research_item_id:$('#task-domain').value==='research'?$('#task-paper').value||null:null}}
+function formPayload(){
+  const kind=$('#task-kind').value,timed=kind==='time_block',free=kind==='free_learning',theme=kind==='theme';
+  const scheduledDate=timed?$('#task-block-date').value||null:null;
+  const startDate=timed?scheduledDate:$('#task-start-date').value||null;
+  const dueDate=free||timed||theme?null:$('#task-due-date').value||null;
+  const weekly=timed&&$('#task-block-weekly').checked;
+  if(startDate&&dueDate&&startDate>dueDate)throw new Error('开始日期不能晚于截止日期');
+  if(timed&&(!scheduledDate||!$('#task-block-start').value||!$('#task-block-end').value))throw new Error('时间段任务需要完整的日期和起止时间');
+  if(timed&&$('#task-block-end').value<=$('#task-block-start').value)throw new Error('结束时间必须晚于开始时间');
+  if(weekly&&!$('#task-block-until').value)throw new Error('每周重复需要填写结束日期');
+  return {
+    title:$('#task-title').value.trim(),domain:$('#task-domain').value,
+    task_kind:free?'free_learning':'standard',is_theme:theme,parent_id:theme?null:$('#task-parent').value||null,schedule_mode:timed?'time_block':'flexible',
+    scheduled_date:scheduledDate,scheduled_start_time:timed?$('#task-block-start').value:null,
+    scheduled_end_time:timed?$('#task-block-end').value:null,schedule_timezone:'Asia/Shanghai',
+    recurrence_until:weekly?$('#task-block-until').value:null,
+    submission_required:$('#task-submission-required').checked,
+    submission_material:$('#task-submission-required').checked?$('#task-submission-material').value.trim():'',
+    submission_submitted:$('#task-submission-required').checked&&$('#task-submission-submitted').checked,
+    subcategory:$('#task-subcategory').value.trim(),description:$('#task-description').value.trim(),
+    start_date:startDate,due_date:dueDate,priority:$('#task-priority').value,
+    status:$('#task-status').value,progress:Number($('#task-progress').value)||0,
+    tags:$('#task-tags').value.split(',').map(value=>value.trim()).filter(Boolean),
+    estimated_minutes:theme?0:Number($('#task-estimated').value)||0,actual_minutes:Number($('#task-actual').value)||0,
+    is_recurring:timed?weekly:$('#task-recurring').checked,
+    recurrence_rule:timed?(weekly?'weekly':''):($('#task-recurring').checked?$('#task-recurrence').value.trim():''),
+    notes:$('#task-notes').value.trim(),
+    research_item_id:$('#task-domain').value==='research'?$('#task-paper').value||null:null
+  };
+}
 function timeBlockConflicts(payload,taskId=''){if(payload.schedule_mode!=='time_block')return [];const first=parseDate(payload.scheduled_date),last=parseDate(payload.recurrence_until||payload.scheduled_date),weekday=first?.getDay();return state.events.filter(event=>{if(event.task_id===taskId||event.date<payload.scheduled_date||event.date>(payload.recurrence_until||payload.scheduled_date))return false;const day=parseDate(event.date);if(payload.is_recurring&&day?.getDay()!==weekday)return false;if(!payload.is_recurring&&event.date!==payload.scheduled_date)return false;return event.start_time<payload.scheduled_end_time&&payload.scheduled_start_time<event.end_time})}
 function toast(message,actionLabel='',action=null){const node=$('#toast'),button=$('#toast-action');$('#toast-text').textContent=message;button.textContent=actionLabel;button.classList.toggle('hidden',!action);button.onclick=action?async()=>{button.classList.add('hidden');try{await action();toast('操作已撤销')}catch(error){showError(error)}}:null;node.classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>node.classList.remove('show'),action?6000:2400)}
 function showError(error){console.error(error);toast(error.message||'操作失败，请查看启动窗口日志')}
@@ -572,7 +671,16 @@ function updateFocusTaskIndicators(){
 let focusDraftSaveTimer=null;
 function persistFocusDraft(){const draft={taskId:state.focusDraft.taskId,preset:state.focusDraft.preset,mode:state.focusDraft.mode,minutes:state.focusDraft.minutes,habitProfileId:state.focusDraft.habitProfileId};clearTimeout(focusDraftSaveTimer);focusDraftSaveTimer=setTimeout(()=>api('/api/settings/focus-draft',{method:'PUT',body:JSON.stringify(draft)}).catch(showError),250)}
 function captureFocusDraft(){const task=$('#focus-task'),mode=$('#focus-mode'),minutes=$('#focus-custom-minutes'),habit=$('#focus-habit');if(task)state.focusDraft.taskId=task.value;if(mode)state.focusDraft.mode=mode.value;if(minutes){const next=Math.max(1,Math.min(720,Number(minutes.value)||25));if(next!==state.focusDraft.minutes)state.focusDraft.preset='custom';state.focusDraft.minutes=next}if(habit)state.focusDraft.habitProfileId=habit.value;persistFocusDraft()}
-function openFocus(taskId='',planBlockId=''){
+async function openThemeExploration(themeId){
+  const theme=state.tasks.find(task=>task.id===themeId&&task.is_theme);if(!theme)return;
+  if(state.focus){openFocus(state.focus.task_id||'');return}
+  try{
+    let exploration=state.tasks.find(task=>(task.parent_task_id||task.parent_id)===themeId&&task.task_kind==='free_learning'&&task.subcategory==='主题探索'&&active(task));
+    if(!exploration)exploration=await createTask({title:`探索：${theme.title}`,domain:theme.domain,parent_id:theme.id,task_kind:'free_learning',subcategory:'主题探索',estimated_minutes:60,status:'not_started'});
+    openFocus(exploration.id,'',true);
+  }catch(error){showError(error)}
+}
+function openFocus(taskId='',planBlockId='',forceFree=false){
   if(taskId)state.focusDraft.taskId=taskId;
   if(planBlockId)state.focusDraft.planBlockId=planBlockId;
   const task=state.tasks.find(item=>item.id===taskId);
@@ -581,6 +689,7 @@ function openFocus(taskId='',planBlockId=''){
     state.focusDraft.minutes=Math.min(720,Math.max(1,Number(task.estimated_minutes||60)-Number(task.actual_minutes||0)));
     persistFocusDraft();
   }
+  if(forceFree){state.focusDraft.preset='free';state.focusDraft.mode='free';state.focusDraft.planBlockId='';persistFocusDraft()}
   const panel=$('#focus-panel');panel.classList.remove('hidden');renderFocusPanel();
 }
 function closeFocus(){captureFocusDraft();$('#focus-panel').classList.add('hidden')}
@@ -590,7 +699,7 @@ function focusTone(kind='done'){if(!state.preferences?.sound_enabled)return;try{
 function focusNotify(title,body){if(state.preferences?.notification_enabled&&'Notification'in window&&Notification.permission==='granted'){try{new Notification(title,{body,icon:'/assets/logo-192.png'});return}catch{}}toast(`${title} · ${body}`)}
 function renderFocusPanel(){
   const panel=$('#focus-panel');if(panel.classList.contains('hidden'))return;
-  const activeTasks=state.tasks.filter(active).sort(sortTasks);
+  const activeTasks=state.tasks.filter(task=>active(task)&&!task.is_theme).sort(sortTasks);
   if(!state.focus){
     const profile=state.planningProfile||{focus_minutes:25},stats=state.focusStats||{},todayMinutes=(stats.by_day||[]).find(item=>item.date===today())?.minutes||0;
     const selected=activeTasks.some(task=>task.id===state.focusDraft.taskId)?state.focusDraft.taskId:(activeTasks[0]?.id||''),selectedHabit=state.focusHabits.some(item=>item.id===state.focusDraft.habitProfileId)?state.focusDraft.habitProfileId:(state.focusDraft.habitProfileId==='__off__'?'__off__':'__default__');
@@ -685,16 +794,16 @@ function safeSurface(palette,stats,requested){
   if(ratio<4.5){const choices=[[20,27,24],[248,250,249]];bestText=choices.sort((a,b)=>Math.min(...candidates.map(bg=>contrast(b,mixed(surface,bg,.98))))-Math.min(...candidates.map(bg=>contrast(a,mixed(surface,bg,.98)))))[0];alpha=.98;ratio=Math.min(...candidates.map(bg=>contrast(bestText,mixed(surface,bg,alpha))));}
   return {alpha:Math.min(.98,alpha),text:`#${bestText.map(v=>Math.round(v).toString(16).padStart(2,'0')).join('')}`,ratio};
 }
-function backgroundCss(settings,imageUrl){const bg=settings.background;if(bg.type==='solid')return bg.color;if(bg.type==='gradient')return `linear-gradient(${bg.gradient_angle}deg,${bg.gradient_start},${bg.gradient_end})`;if(bg.type==='image'&&imageUrl)return `linear-gradient(rgba(0,0,0,.02),rgba(0,0,0,.02)),url("${imageUrl}")`;return 'none'}
-function colorStatsForSettings(settings){const bg=settings.background;if(bg.type==='solid'){const l=luminance(hexRgb(bg.color));return {min:l,avg:l,max:l}}if(bg.type==='gradient'){const a=luminance(hexRgb(bg.gradient_start)),b=luminance(hexRgb(bg.gradient_end));return {min:Math.min(a,b),avg:(a+b)/2,max:Math.max(a,b)}}return null}
+function backgroundCss(settings,imageUrl,palette){const bg=settings.background;if(bg.type==='ambient')return `radial-gradient(circle at 15% 18%,color-mix(in srgb,${palette.accent} 12%,${palette.canvas}) 0%,transparent 48%),radial-gradient(circle at 85% 78%,${palette.soft} 0%,transparent 48%),linear-gradient(145deg,${palette.canvas},${palette.soft})`;if(bg.type==='solid')return `linear-gradient(${bg.color},${bg.color})`;if(bg.type==='gradient')return `linear-gradient(${bg.gradient_angle}deg,${bg.gradient_start},${bg.gradient_end})`;if(bg.type==='image'&&imageUrl)return `linear-gradient(rgba(0,0,0,.02),rgba(0,0,0,.02)),url("${imageUrl}")`;return 'none'}
+function colorStatsForSettings(settings,palette){const bg=settings.background;if(bg.type==='ambient'){const values=[palette.canvas,palette.soft,palette.accent].map(color=>luminance(hexRgb(color)));return {min:Math.min(...values),avg:values.reduce((a,b)=>a+b,0)/values.length,max:Math.max(...values)}}if(bg.type==='solid'){const l=luminance(hexRgb(bg.color));return {min:l,avg:l,max:l}}if(bg.type==='gradient'){const a=luminance(hexRgb(bg.gradient_start)),b=luminance(hexRgb(bg.gradient_end));return {min:Math.min(a,b),avg:(a+b)/2,max:Math.max(a,b)}}return null}
 function sampleImage(source){return new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>{try{const canvas=document.createElement('canvas');canvas.width=48;canvas.height=48;const context=canvas.getContext('2d',{willReadFrequently:true});context.drawImage(image,0,0,48,48);const pixels=context.getImageData(0,0,48,48).data,values=[];for(let i=0;i<pixels.length;i+=16){if(pixels[i+3]<32)continue;values.push(luminance([pixels[i],pixels[i+1],pixels[i+2]]))}if(!values.length)throw new Error('图片没有可见像素');resolve({min:Math.min(...values),max:Math.max(...values),avg:values.reduce((a,b)=>a+b,0)/values.length})}catch(error){reject(error)}};image.onerror=()=>reject(new Error('背景图片无法读取'));image.src=source})}
 async function applyAppearance(settings,{file=null,cache=false}={}){
   const resolved=resolveMode(settings.mode),palette=THEME_PALETTES[settings.preset]?.[resolved]||THEME_PALETTES.forest[resolved];
-  let imageUrl=settings.background_url,stats=colorStatsForSettings(settings);
+  let imageUrl=settings.background_url,stats=colorStatsForSettings(settings,palette);
   if(file){if(!state.appearancePreviewUrl)state.appearancePreviewUrl=URL.createObjectURL(file);imageUrl=state.appearancePreviewUrl}
   if(settings.background.type==='image'&&imageUrl){try{stats=await sampleImage(imageUrl)}catch(error){imageUrl=null;stats=null;if(!file)console.warn('背景图片回退到研林主题',error)}}
   const readable=safeSurface(palette,stats,settings.surface_opacity),root=document.documentElement;
-  const values={'--canvas':palette.canvas,'--surface-rgb':hexRgb(palette.surface).join(', '),'--surface-strong-rgb':hexRgb(palette.strong).join(', '),'--surface-alpha':readable.alpha,'--text-primary':readable.text,'--text-secondary':palette.muted,'--border':palette.border,'--accent':palette.accent,'--accent-soft':palette.soft,'--app-background':backgroundCss(settings,imageUrl)};
+  const values={'--canvas':palette.canvas,'--surface-rgb':hexRgb(palette.surface).join(', '),'--surface-strong-rgb':hexRgb(palette.strong).join(', '),'--surface-alpha':readable.alpha,'--text-primary':readable.text,'--text-secondary':palette.muted,'--border':palette.border,'--accent':palette.accent,'--accent-soft':palette.soft,'--on-accent':resolved==='dark'?'#122019':'#ffffff','--app-background':backgroundCss(settings,imageUrl,palette)};
   Object.entries(values).forEach(([name,value])=>root.style.setProperty(name,value));root.dataset.theme=resolved;root.dataset.preset=settings.preset;
   $('#theme-color')?.setAttribute('content',settings.background.type==='solid'?settings.background.color:palette.canvas);
   if($('#contrast-note'))$('#contrast-note').textContent=`正文与面板最低对比度 ${readable.ratio.toFixed(2)}:1 · ${readable.ratio>=4.5?'符合 WCAG AA':'已启用最强可读遮罩'}`;
@@ -706,7 +815,7 @@ function fillAppearanceForm(settings){
   $('#appearance-background-type').value=settings.background.type;$('#appearance-color').value=settings.background.color;$('#appearance-gradient-start').value=settings.background.gradient_start;$('#appearance-gradient-end').value=settings.background.gradient_end;$('#appearance-gradient-angle').value=settings.background.gradient_angle;$('#appearance-opacity').value=settings.surface_opacity;updateAppearanceFields();
 }
 function readAppearanceForm(){return {version:1,preset:$('input[name="appearance-preset"]:checked').value,mode:$('input[name="appearance-mode"]:checked').value,background:{type:$('#appearance-background-type').value,color:$('#appearance-color').value,gradient_start:$('#appearance-gradient-start').value,gradient_end:$('#appearance-gradient-end').value,gradient_angle:Number($('#appearance-gradient-angle').value)},surface_opacity:Number($('#appearance-opacity').value),has_background_image:state.appearance.has_background_image,background_url:state.appearance.background_url}}
-function updateAppearanceFields(){const type=$('#appearance-background-type').value;$('#appearance-solid').classList.toggle('hidden',type!=='solid');$('#appearance-gradient').classList.toggle('hidden',type!=='gradient');$('#appearance-image').classList.toggle('hidden',type!=='image');$('#appearance-angle-output').textContent=`${$('#appearance-gradient-angle').value}°`;$('#appearance-opacity-output').textContent=`${Math.round(Number($('#appearance-opacity').value)*100)}%`;$('#remove-background').classList.toggle('hidden',!state.appearance.has_background_image||state.appearanceRemoveImage)}
+function updateAppearanceFields(){const type=$('#appearance-background-type').value;$('#appearance-ambient').classList.toggle('hidden',type!=='ambient');$('#appearance-solid').classList.toggle('hidden',type!=='solid');$('#appearance-gradient').classList.toggle('hidden',type!=='gradient');$('#appearance-image').classList.toggle('hidden',type!=='image');$('#appearance-angle-output').textContent=`${$('#appearance-gradient-angle').value}°`;$('#appearance-opacity-output').textContent=`${Math.round(Number($('#appearance-opacity').value)*100)}%`;$('#remove-background').classList.toggle('hidden',!state.appearance.has_background_image||state.appearanceRemoveImage)}
 async function previewAppearance(){updateAppearanceFields();state.appearanceDraft=readAppearanceForm();await applyAppearance(state.appearanceDraft,{file:state.appearanceImageFile})}
 function clearAppearancePreview(){if(state.appearancePreviewUrl)URL.revokeObjectURL(state.appearancePreviewUrl);state.appearancePreviewUrl=null}
 function openAppearance(){clearAppearancePreview();state.appearanceDraft=clone(state.appearance);state.appearanceImageFile=null;state.appearanceRemoveImage=false;fillAppearanceForm(state.appearanceDraft);$('#appearance-dialog').showModal();previewAppearance()}
@@ -714,6 +823,7 @@ async function cancelAppearance(){clearAppearancePreview();state.appearanceImage
 async function saveAppearance(event){event.preventDefault();try{let settings=readAppearanceForm();if(state.appearanceRemoveImage)await api('/api/appearance/background',{method:'DELETE'});if(state.appearanceImageFile){const form=new FormData();form.append('file',state.appearanceImageFile);const uploaded=await api('/api/appearance/background',{method:'POST',body:form});settings.background.type='image';settings.background_url=uploaded.appearance.background_url;settings.has_background_image=true}const saved=await api('/api/appearance',{method:'PUT',body:JSON.stringify(settings)});state.appearance=saved.appearance;clearAppearancePreview();state.appearanceImageFile=null;state.appearanceRemoveImage=false;await applyAppearance(state.appearance,{cache:true});$('#appearance-dialog').close();toast('外观设置已保存')}catch(error){showError(error)}}
 
 $('#task-form').onsubmit=async event=>{event.preventDefault();try{const id=$('#task-id').value,payload=formPayload(),conflicts=timeBlockConflicts(payload,id);if(conflicts.length&&!confirm(`检测到 ${conflicts.length} 个时间重叠，仍要保存这个时间段任务吗？`))return;if(id)await patchTask(id,payload);else await createTask(payload);if(payload.schedule_mode==='time_block')await loadTasks({migrate:false});closeDialog();toast(id?'任务已更新':'任务已创建')}catch(error){showError(error)}};
+$('#task-parent').onchange=event=>{const parent=state.tasks.find(task=>task.id===event.target.value);if(parent)$('#task-domain').value=parent.domain};
 $('#delete-btn').onclick=async()=>{const id=$('#task-id').value;if(!id)return;try{closeDialog();await trashTask(id)}catch(error){showError(error)}};
 $('#add-btn').onclick=()=>openDialog();
 $('#focus-btn').onclick=()=>openFocus();
@@ -737,6 +847,7 @@ $('#task-recurring').onchange=event=>{$('#task-recurrence').disabled=!event.targ
 $('#task-block-weekly').onchange=event=>{$('#task-block-until').disabled=!event.target.checked;if(event.target.checked&&!$('#task-block-until').value)$('#task-block-until').value=iso(addDays(parseDate($('#task-block-date').value||today()),112))};
 $('#task-domain').onchange=()=>updateTaskPaperField(Boolean($('#task-id').value));
 $('#task-kind').onchange=updateTaskKindField;
+$('#task-submission-required').onchange=updateTaskSubmissionField;
 $('#task-status').onchange=event=>{if(event.target.value==='completed')$('#task-progress').value=100};
 $$('.nav-item').forEach(button=>button.onclick=async()=>{state.view=button.dataset.view;$('.sidebar').classList.remove('open');try{if(state.view==='trash')state.trash=await api('/api/trash');if(state.view==='focus_analytics')await loadFocusAnalytics(false)}catch(error){showError(error)}render()});
 $('#status-filter').onchange=event=>{state.status=event.target.value;render()};
@@ -750,6 +861,10 @@ $('#close-schedule-dialog').onclick=()=>$('#schedule-dialog').close();$('#cancel
 $('#semester-indicator').onclick=()=>openSemesterDialog(currentSemester()?.id);$('#close-semester-dialog').onclick=()=>$('#semester-dialog').close();$('#cancel-semester-edit').onclick=()=>$('#semester-dialog').close();
 $('#semester-form').onsubmit=async event=>{event.preventDefault();const id=$('#edit-semester-id').value,existing=state.semesters.find(item=>item.id===id);if(!existing)return;try{await api(`/api/semesters/${id}`,{method:'PUT',body:JSON.stringify({...existing,name:$('#edit-semester-name').value.trim(),stage_label:$('#edit-semester-stage').value.trim(),start_date:$('#edit-semester-start').value,end_date:$('#edit-semester-end').value})});$('#semester-dialog').close();await loadTasks({migrate:false});toast('学期已更新，课程日期已重新计算')}catch(error){showError(error)}};
 $('#course-form').onsubmit=async event=>{event.preventDefault();const id=$('#course-id').value,first={...(editingCourseMeetings[0]||{}),weekday:Number($('#course-weekday').value),start_period:Number($('#course-start-period').value),end_period:Number($('#course-end-period').value),start_time:$('#course-start-time').value,end_time:$('#course-end-time').value,start_week:Number($('#course-start-week').value),end_week:Number($('#course-end-week').value),week_pattern:$('#course-week-pattern').value,custom_weeks:[]};try{await api(`/api/courses/${id}`,{method:'PUT',body:JSON.stringify({name:$('#course-name').value.trim(),teacher:$('#course-teacher').value.trim(),location:$('#course-location').value.trim(),notes:$('#course-notes').value.trim(),meetings:[first,...editingCourseMeetings.slice(1)]})});$('#course-dialog').close();await loadTasks({migrate:false});toast('课程已更新')}catch(error){showError(error)}};
+$('#course-submission-form').onsubmit=saveCourseSubmission;
+$('#close-course-submission').onclick=closeCourseSubmission;
+$('#cancel-course-submission').onclick=closeCourseSubmission;
+$('#remove-course-submission').onclick=removeCourseSubmission;
 $('#close-course-dialog').onclick=()=>$('#course-dialog').close();$('#cancel-course').onclick=()=>$('#course-dialog').close();
 $('#research-task-form').onsubmit=confirmResearchTask;$('#close-research-task').onclick=closeResearchTask;$('#cancel-research-task').onclick=closeResearchTask;
 $('#research-import-form').onsubmit=confirmResearchImport;$('#close-research-import').onclick=closeResearchImport;$('#cancel-research-import').onclick=closeResearchImport;$('#preview-research-import').onclick=previewResearchImport;$('#research-import-mode').onchange=updateResearchImportMode;$('#research-import-source').onchange=loadZoteroCollections;

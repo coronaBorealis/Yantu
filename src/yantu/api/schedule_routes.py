@@ -90,6 +90,18 @@ def create_schedule_blueprint(db_path: Path | str, ocr_engine=None) -> Blueprint
             return jsonify({"error": "Meeting not found"}), 404
         return "", 204
 
+    @blueprint.put("/course-meetings/<meeting_id>/submissions/<occurrence_date>")
+    def submission_put(meeting_id: str, occurrence_date: str):
+        return jsonify({"submission": schedules.save_course_submission(
+            meeting_id, occurrence_date, request.get_json(silent=True) or {}
+        )})
+
+    @blueprint.delete("/course-meetings/<meeting_id>/submissions/<occurrence_date>")
+    def submission_delete(meeting_id: str, occurrence_date: str):
+        if not schedules.delete_course_submission(meeting_id, occurrence_date):
+            return jsonify({"error": "Submission not found"}), 404
+        return "", 204
+
     @blueprint.get("/calendar/events")
     def calendar_events():
         start, end = request.args.get("start"), request.args.get("end")

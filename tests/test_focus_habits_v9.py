@@ -68,7 +68,7 @@ def test_v9_migration_adds_habit_tables_and_is_idempotent(tmp_path: Path) -> Non
     with sqlite3.connect(db_path) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
         assert {"focus_habit_profiles", "focus_habit_sessions", "focus_app_usage"} <= tables
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 15
 
 
 def test_habit_sampling_separates_allowed_idle_and_distraction(tmp_path: Path) -> None:

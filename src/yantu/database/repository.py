@@ -11,7 +11,7 @@ from ..common import utc_now
 from .config import DEFAULT_DB_PATH
 from .constants import DOMAINS, PRIORITIES, STATUSES
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 15
 
 
 def _column_names(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -86,6 +86,7 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                     CHECK(domain IN ('research', 'course', 'personal', 'inbox')),
                 task_kind TEXT NOT NULL DEFAULT 'standard'
                     CHECK(task_kind IN ('standard', 'free_learning')),
+                is_theme INTEGER NOT NULL DEFAULT 0 CHECK(is_theme IN (0, 1)),
                 schedule_mode TEXT NOT NULL DEFAULT 'flexible'
                     CHECK(schedule_mode IN ('flexible', 'time_block')),
                 scheduled_date TEXT,
@@ -93,6 +94,9 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                 scheduled_end_time TEXT,
                 schedule_timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
                 recurrence_until TEXT,
+                submission_required INTEGER NOT NULL DEFAULT 0 CHECK(submission_required IN (0, 1)),
+                submission_material TEXT NOT NULL DEFAULT '',
+                submission_completed_at TEXT,
                 subcategory TEXT NOT NULL DEFAULT '',
                 tags TEXT NOT NULL DEFAULT '[]',
                 description TEXT NOT NULL DEFAULT '',
@@ -201,6 +205,18 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                 created_at TEXT NOT NULL,
                 UNIQUE(meeting_id, occurrence_date, kind)
             );
+
+            CREATE TABLE IF NOT EXISTS course_submissions (
+                meeting_id TEXT NOT NULL REFERENCES course_meetings(id) ON DELETE CASCADE,
+                occurrence_date TEXT NOT NULL,
+                material TEXT NOT NULL DEFAULT '',
+                completed_at TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(meeting_id, occurrence_date)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_course_submissions_date
+                ON course_submissions(occurrence_date);
 
             CREATE INDEX IF NOT EXISTS idx_courses_semester
                 ON courses(semester_id, deleted_at);
@@ -549,12 +565,16 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
             "tasks",
             {
                 "task_kind": "TEXT NOT NULL DEFAULT 'standard' CHECK(task_kind IN ('standard', 'free_learning'))",
+                "is_theme": "INTEGER NOT NULL DEFAULT 0 CHECK(is_theme IN (0, 1))",
                 "schedule_mode": "TEXT NOT NULL DEFAULT 'flexible' CHECK(schedule_mode IN ('flexible', 'time_block'))",
                 "scheduled_date": "TEXT",
                 "scheduled_start_time": "TEXT",
                 "scheduled_end_time": "TEXT",
                 "schedule_timezone": "TEXT NOT NULL DEFAULT 'Asia/Shanghai'",
                 "recurrence_until": "TEXT",
+                "submission_required": "INTEGER NOT NULL DEFAULT 0 CHECK(submission_required IN (0, 1))",
+                "submission_material": "TEXT NOT NULL DEFAULT ''",
+                "submission_completed_at": "TEXT",
                 "parent_task_id": "TEXT REFERENCES tasks(id) ON DELETE SET NULL",
                 "deadline": "TEXT",
                 "estimated_hours": "REAL NOT NULL DEFAULT 0 CHECK(estimated_hours >= 0)",
@@ -697,6 +717,8 @@ def task_from_row(row: sqlite3.Row) -> dict[str, Any]:
     except json.JSONDecodeError:
         task["tags"] = []
     task["is_recurring"] = bool(task["is_recurring"])
+    task["is_theme"] = bool(task.get("is_theme"))
+    task["submission_required"] = bool(task["submission_required"])
     return task
 
 

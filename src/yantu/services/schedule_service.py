@@ -219,6 +219,7 @@ class ScheduleService:
         if end_date < start_date or (end_date - start_date).days > 370:
             raise ValueError("日历查询范围必须为 0 到 370 天")
         events: list[dict[str, Any]] = []
+        submissions = self.repository.list_submissions(start_date.isoformat(), end_date.isoformat())
         for meeting in self.repository.meetings_between():
             semester_start = date.fromisoformat(meeting["semester_start"])
             semester_end = date.fromisoformat(meeting["semester_end"])
@@ -254,6 +255,7 @@ class ScheduleService:
                                 "week": week,
                                 "start_period": meeting["start_period"],
                                 "end_period": meeting["end_period"],
+                                "submission": submissions.get((meeting["id"], cursor.isoformat())),
                             }
                         )
                 cursor += timedelta(days=1)
@@ -304,9 +306,59 @@ class ScheduleService:
                         "color": colors.get(str(task.get("domain")), colors["inbox"]),
                         "location": "时间段任务",
                         "recurring": recurring,
+                        "submission_required": bool(task.get("submission_required")),
+                        "submission_material": task.get("submission_material") or "",
+                        "submission_completed_at": task.get("submission_completed_at"),
                     })
                 cursor += timedelta(days=1)
         return events
+
+    def save_course_submission(self, meeting_id: str, occurrence_date: Any,
+                               values: Mapping[str, Any]) -> dict[str, Any]:
+        day = self._date(occurrence_date, "课程日期")
+        if not any(event.get("meeting_id") == meeting_id for event in self.calendar_events(day, day)):
+            raise ValueError("该日期没有此课程课次")
+        material = str(values.get("material") or "").strip()
+        if not material or len(material) > 200:
+            raise ValueError("待交作业名称应为 1–200 个字符")
+        submitted = values.get("submitted", False)
+        if not isinstance(submitted, bool):
+            raise ValueError("submitted 必须是布尔值")
+        existing = self.repository.list_submissions(day, day).get((meeting_id, day))
+        completed_at = (existing or {}).get("completed_at") or utc_now() if submitted else None
+        return self.repository.upsert_submission(meeting_id, day, material, completed_at, utc_now())
+
+    def delete_course_submission(self, meeting_id: str, occurrence_date: Any) -> bool:
+        day = self._date(occurrence_date, "课程日期")
+        return self.repository.delete_submission(meeting_id, day)
+
+    def list_course_submissions(self) -> list[dict[str, Any]]:
+        return self.repository.list_all_submissions()
+
+    def import_course_submissions(self, rows: Any) -> int:
+        if not isinstance(rows, list):
+            return 0
+        imported = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            meeting_id = str(row.get("meeting_id") or "")
+            if not self.repository.meeting_exists(meeting_id):
+                continue
+            try:
+                day = self._date(row.get("occurrence_date"), "课程日期")
+            except ValueError:
+                continue
+            material = str(row.get("material") or "").strip()
+            if not material or len(material) > 200:
+                continue
+            self.repository.upsert_submission(
+                meeting_id, day, material,
+                str(row["completed_at"]) if row.get("completed_at") else None,
+                utc_now(),
+            )
+            imported += 1
+        return imported
 
     def skip_occurrence(self, meeting_id: str, occurrence_date: Any) -> bool:
         value = self._date(occurrence_date, "课程日期")
